@@ -1,7 +1,98 @@
 from pydantic import BaseModel, Field
-from typing import Dict, Optional
+from typing import Dict, Optional, NamedTuple
 import json
+from playwright.sync_api import Page, Frame, Locator
 
+
+class FillResult(NamedTuple):
+    present: bool         # we found a matching input in this context
+    filled: bool          # we actually filled it right now
+    already_ok: bool      # it already had the desired value
+
+# --- Core helpers ------------------------------------------------------------
+def _attempt_on_locator(loc: Locator, value: str) -> FillResult:
+    try:
+        if loc.count() == 0:
+            return FillResult(False, False, False)
+        target = loc.first
+        try:
+            current = target.input_value(timeout=300)
+        except Exception:
+            current = ""
+        if current.strip() == value.strip():
+            return FillResult(True, False, True)
+        target.fill(value, timeout=1000)
+        return FillResult(True, True, False)
+    except Exception:
+        # The element existed but couldn't be filled (disabled/hidden/etc.)
+        return FillResult(True, False, False)
+
+# --- Locator discovery (without filling) --------------------------------------
+def _find_field_locator_in_context(ctx: Page | Frame,
+                                   synonyms: list[str],
+                                   input_names: list[str]) -> Optional[Locator]:
+    # 1) By accessible label
+    for lt in synonyms:
+        try:
+            loc = ctx.get_by_label(lt, exact=False)
+            if loc.count() > 0:
+                return loc.first
+        except Exception:
+            pass
+
+    # 2) Placeholder
+    for ph in synonyms:
+        try:
+            loc = ctx.locator(f"input[placeholder*='{ph}']")
+            if loc.count() > 0:
+                return loc.first
+        except Exception:
+            pass
+
+    # 3) name=
+    for name_key in input_names:
+        try:
+            loc = ctx.locator(f"input[name*='{name_key}']")
+            if loc.count() > 0:
+                return loc.first
+        except Exception:
+            pass
+
+    # 4) aria-label
+    for aria in synonyms:
+        try:
+            loc = ctx.locator(f"input[aria-label*='{aria}']")
+            if loc.count() > 0:
+                return loc.first
+        except Exception:
+            pass
+
+    # 5) Generic text input as last resort
+    try:
+        loc = ctx.locator("input[type='text']")
+        if loc.count() > 0:
+            return loc.first
+    except Exception:
+        pass
+    return None
+
+def find_field_locator_anywhere(page: Page,
+                                synonyms: list[str],
+                                input_names: list[str]) -> Optional[Locator]:
+    loc = _find_field_locator_in_context(page, synonyms, input_names)
+    if loc is not None:
+        return loc
+    for fr in page.frames:
+        if fr == page.main_frame:
+            continue
+        try:
+            loc = _find_field_locator_in_context(fr, synonyms, input_names)
+            if loc is not None:
+                return loc
+        except Exception:
+            continue
+    return None
+    
 class ApplicantProfile(BaseModel):
     # Common fields; extend as needed
     first_name: Optional[str] = None
