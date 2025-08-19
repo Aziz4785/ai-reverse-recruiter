@@ -9,13 +9,41 @@ Usage:
 
 import argparse
 import re
-from typing import List, NamedTuple
+from typing import List, NamedTuple, Generator, Optional
 from user_data import *
 from playwright.sync_api import Page, TimeoutError as PWTimeout, Frame, sync_playwright
 from function_utils import *
 from function_utils import _attempt_on_locator, find_field_locator_anywhere
 from take_screenshot import capture_full_page_stitched
 
+
+def _get_greenhouse_frame(page: Page, timeout_ms: int = 10000) -> Optional[Frame]:
+    # 1) Wait for the iframe node to appear (common IDs/selectors Greenhouse uses)
+    try:
+        page.wait_for_selector("iframe#grnhse_iframe, #grnhse_app iframe, iframe[src*='greenhouse']", timeout=timeout_ms)
+    except Exception:
+        pass  # we'll still try to find by URL below
+
+    # 2) Find by URL or name
+    for fr in page.frames:
+        try:
+            if (fr.name and "grnhse_iframe" in fr.name) or (fr.url and GH_RE.search(fr.url)):
+                return fr
+        except Exception:
+            continue
+    return None
+
+def _walk_frames(root: Page | Frame) -> Generator[Frame, None, None]:
+    """Depth-first traversal of all descendant frames (excluding the page itself)."""
+    if isinstance(root, Page):
+        children = list(root.frames)
+        # Page.frames includes main_frame; we skip it below
+    else:
+        children = list(root.child_frames)
+    for fr in children:
+        yield fr
+        # Recurse into nested iframes
+        yield from _walk_frames(fr)
 
 def _try_fill_in_context(ctx: Page | Frame, value: str, synonyms : List[str], input_names : List[str]) -> bool:
     # Try by accessible label
@@ -59,53 +87,120 @@ def _try_fill_in_context(ctx: Page | Frame, value: str, synonyms : List[str], in
 
 def _try_fill_in_context_status(ctx: Page | Frame, value: str,
                                 synonyms: List[str], input_names: List[str]) -> FillResult:
+    # 0) Role-based (often more robust across frameworks)
+    for lt in synonyms:
+        try:
+            res = _attempt_on_locator(ctx.get_by_role("textbox", name=lt, exact=False), value)
+            if res.present: return res
+        except Exception:
+            pass
+
     # 1) Accessible label
     for lt in synonyms:
         res = _attempt_on_locator(ctx.get_by_label(lt, exact=False), value)
-        if res.present:
-            return res
+        if res.present: return res
 
-    # 2) Placeholder
+    # 1b) Label text → control (covers odd label/for wiring)
+    for lt in synonyms:
+        res = _attempt_on_locator(
+            ctx.locator(f"label:has-text('{lt}')").locator("input, textarea, [contenteditable='true']"),
+            value
+        )
+        if res.present: return res
+
+    # 2) Placeholder (case-insensitive)
     for ph in synonyms:
-        res = _attempt_on_locator(ctx.locator(f"input[placeholder*='{ph}']"), value)
-        if res.present:
-            return res
+        res = _attempt_on_locator(
+            ctx.locator(f"input[placeholder*='{ph}' i], textarea[placeholder*='{ph}' i]"),
+            value
+        )
+        if res.present: return res
 
-    # 3) name=
+    # 3) name= (case-insensitive)
     for name_key in input_names:
-        res = _attempt_on_locator(ctx.locator(f"input[name*='{name_key}']"), value)
-        if res.present:
-            return res
+        res = _attempt_on_locator(
+            ctx.locator(f"input[name*='{name_key}' i], textarea[name*='{name_key}' i]"),
+            value
+        )
+        if res.present: return res
 
-    # 4) aria-label
+    # 4) aria-label (case-insensitive)
     for aria in synonyms:
-        res = _attempt_on_locator(ctx.locator(f"input[aria-label*='{aria}']"), value)
-        if res.present:
-            return res
+        res = _attempt_on_locator(
+            ctx.locator(f"input[aria-label*='{aria}' i], textarea[aria-label*='{aria}' i]"),
+            value
+        )
+        if res.present: return res
 
-    # 5) Last resort (generic text input). Comment out if you prefer strict matching only.
-    res = _attempt_on_locator(ctx.locator("input[type='text']"), value)
-    if res.present:
-        return res
+    # 5) Generic visible text inputs (common types) + textarea + contenteditable
+    generic_selector = (
+        "input:not([type='hidden']):not([disabled]):is([type='text'],[type='email'],"
+        "[type='tel'],[type='search'],[type='url'],[type='number']), "
+        "textarea, "
+        "[contenteditable='true']"
+    )
+    res = _attempt_on_locator(ctx.locator(generic_selector), value)
+    if res.present: return res
 
     return FillResult(False, False, False)
 
 def try_fill_field_anywhere(page: Page, value: str,
-                          synonyms: List[str], input_names: List[str]) -> FillResult:
-    # Try main document
+                            synonyms: List[str], input_names: List[str]) -> FillResult:
+    
+    # A) If we’re already on a Greenhouse-hosted page, just fill it
+    if GH_RE.search(page.url or ""):
+        page.wait_for_load_state("domcontentloaded", timeout=8000)
+        page.wait_for_timeout(200)
+        res = _try_fill_in_context_status(page, value, synonyms, input_names)
+        if res.present:
+            return res
+
+    # B) Embedded Greenhouse iframe (like the Turn/River page)
+    gh = _get_greenhouse_frame(page)
+    if gh:
+        # Make sure the form (application, not just the board) is mounted
+        try:
+            gh.wait_for_load_state("domcontentloaded", timeout=8000)
+        except Exception:
+            pass
+        # Any plausible text field (GH app) — first_name shows up as input[name='first_name']
+        try:
+            gh.wait_for_selector("input[name], textarea, input[placeholder]", timeout=6000)
+        except Exception:
+            pass
+
+        # Some sites lazy-mount sections until scrolled
+        try:
+            gh.evaluate("window.scrollTo(0, Math.min(600, document.body.scrollHeight));")
+        except Exception:
+            pass
+
+        res = _try_fill_in_context_status(gh, value, synonyms, input_names)
+        if res.present:
+            return res
+        
+    # 1) Try main document first
     res = _try_fill_in_context_status(page, value, synonyms, input_names)
     if res.present:
         return res
-    # Try iframes
-    for fr in page.frames:
+
+    # 2) Try ALL nested iframes (depth-first)
+    for fr in _walk_frames(page):
         if fr == page.main_frame:
             continue
+        try:
+            # Best-effort: ensure the frame DOM is available
+            fr.wait_for_load_state("domcontentloaded", timeout=3000)
+        except Exception:
+            pass  # Some ad/sandbox frames never settle; keep going
+
         try:
             res = _try_fill_in_context_status(fr, value, synonyms, input_names)
             if res.present:
                 return res
         except Exception:
             continue
+
     return FillResult(False, False, False)
 
 def try_fill_field_anywhere2(page: Page, value: str, synonyms: List[str], input_names: List[str]) -> bool:
@@ -170,7 +265,8 @@ def run(url: str, headless: bool) -> None:
             page.wait_for_load_state("networkidle", timeout=5000)
         except Exception:
             pass
-
+        #wait for 5 seconds until everything is in place:
+        page.wait_for_timeout(5000)
         dismiss_cookie_banners(page)
         try_click_apply_buttons(page)
 

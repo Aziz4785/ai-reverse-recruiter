@@ -2,6 +2,9 @@ from pydantic import BaseModel, Field
 from typing import Dict, Optional, NamedTuple
 import json
 from playwright.sync_api import Page, Frame, Locator
+import re
+
+GH_RE = re.compile(r"(job-boards\.greenhouse\.io|boards\.greenhouse\.io|grnh\.se)")
 
 
 class FillResult(NamedTuple):
