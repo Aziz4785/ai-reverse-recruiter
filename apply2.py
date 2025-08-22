@@ -17,6 +17,75 @@ from function_utils import _attempt_on_locator, find_field_locator_anywhere
 from take_screenshot import capture_full_page_stitched
 
 
+def _try_upload_in_context(ctx: Page | Frame, file_path: Path) -> bool:
+    """
+    Attempt to locate a file input (resume/CV upload) inside the given context and upload.
+    Returns True if successful.
+    """
+    # 1) Explicit name / id patterns (most common in ATS)
+    patterns = ["resume", "cv", "upload", "file"]
+    for pat in patterns:
+        try:
+            locator = ctx.locator(f"input[type='file'][name*='{pat}' i], input[type='file'][id*='{pat}' i]")
+            if locator.count() > 0:
+                locator.first.set_input_files(str(file_path))
+                return True
+        except Exception:
+            pass
+
+    # 2) Label-based (e.g. <label>Upload Resume<input type="file">...</label>)
+    for pat in patterns:
+        try:
+            locator = ctx.locator(f"label:has-text('{pat}')").locator("input[type='file']")
+            if locator.count() > 0:
+                locator.first.set_input_files(str(file_path))
+                return True
+        except Exception:
+            pass
+
+    # 3) Generic visible file input
+    try:
+        locator = ctx.locator("input[type='file']:not([disabled])")
+        if locator.count() > 0:
+            locator.first.set_input_files(str(file_path))
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def try_upload_resume_anywhere(page: Page) -> bool:
+    """
+    Try to upload resume.pdf into any resume/CV file input across page and frames.
+    Returns True if successful, False otherwise.
+    """
+    # A) If Greenhouse-hosted page
+    if GH_RE.search(page.url or ""):
+        if _try_upload_in_context(page, RESUME_PATH):
+            return True
+
+    # B) Greenhouse iframe
+    gh = _get_greenhouse_frame(page)
+    if gh and _try_upload_in_context(gh, RESUME_PATH):
+        return True
+
+    # 1) Try main document
+    if _try_upload_in_context(page, RESUME_PATH):
+        return True
+
+    # 2) Try all nested iframes
+    for fr in _walk_frames(page):
+        if fr == page.main_frame:
+            continue
+        try:
+            fr.wait_for_load_state("domcontentloaded", timeout=3000)
+        except Exception:
+            pass
+        if _try_upload_in_context(fr, RESUME_PATH):
+            return True
+
+    return False
 def _get_greenhouse_frame(page: Page, timeout_ms: int = 10000) -> Optional[Frame]:
     # 1) Wait for the iframe node to appear (common IDs/selectors Greenhouse uses)
     try:
@@ -147,8 +216,10 @@ def _try_fill_in_context_status(ctx: Page | Frame, value: str,
 def try_fill_field_anywhere(page: Page, value: str,
                             synonyms: List[str], input_names: List[str]) -> FillResult:
     
+    print(f"    trying filling the field : {synonyms[0]}")
     # A) If we’re already on a Greenhouse-hosted page, just fill it
     if GH_RE.search(page.url or ""):
+        print("    we are on a greenhouse page")
         page.wait_for_load_state("domcontentloaded", timeout=8000)
         page.wait_for_timeout(200)
         res = _try_fill_in_context_status(page, value, synonyms, input_names)
@@ -158,6 +229,7 @@ def try_fill_field_anywhere(page: Page, value: str,
     # B) Embedded Greenhouse iframe (like the Turn/River page)
     gh = _get_greenhouse_frame(page)
     if gh:
+        print("    we are on a greenhouse iframe")
         # Make sure the form (application, not just the board) is mounted
         try:
             gh.wait_for_load_state("domcontentloaded", timeout=8000)
@@ -180,11 +252,13 @@ def try_fill_field_anywhere(page: Page, value: str,
             return res
         
     # 1) Try main document first
+    print("    trying to fill the field in the main document")
     res = _try_fill_in_context_status(page, value, synonyms, input_names)
     if res.present:
         return res
 
     # 2) Try ALL nested iframes (depth-first)
+    print("    trying to fill the field in the nested iframes")
     for fr in _walk_frames(page):
         if fr == page.main_frame:
             continue
@@ -270,47 +344,20 @@ def run(url: str, headless: bool) -> None:
         dismiss_cookie_banners(page)
         try_click_apply_buttons(page)
 
-        # Scroll progressively and attempt filling on page and iframes each step
-        first_name_ok = False
-        last_name_ok = False
-        preferred_name_ok = False
-        phone_number_ok = False
-
         fields = [
             ("first_name",     FIRST_NAME_VALUE,     FIRST_NAME_SYNONYMS,     INPUT_NAME_FIRSTNAME),
             ("last_name",      LAST_NAME_VALUE,      LAST_NAME_SYNONYMS,      INPUT_NAME_LASTNAME),
             ("preferred_name", PREFERED_NAME_VALUE,  PREFERED_NAME_SYNONYMS,  INPUT_NAME_PREFEREDNAME),
             ("phone_number",   PHONE_NUMBER_VALUE,   PHONE_NUMBER_SYNONYMS,   INPUT_NAME_PHONENUMBER),
+            ("email",          EMAIL_VALUE,          EMAIL_SYNONYMS,          INPUT_NAME_EMAIL),
         ]
 
-        done = {key: False for key, *_ in fields} #this  code to be removed
+        done = {key: False for key, *_ in fields} 
         scroll_number = 0
-
-        # Scroll progressively and attempt filling on page and iframes each step
-        # first_name_ok = False
-        # last_name_ok = False
-        # for _ in range(12):
-        #     if not first_name_ok:
-        #         first_name_ok = try_fill_field_anywhere2(page, FIRST_NAME_VALUE, FIRST_NAME_SYNONYMS, INPUT_NAME_FIRSTNAME)
-        #     if not last_name_ok:
-        #         last_name_ok = try_fill_field_anywhere2(page, LAST_NAME_VALUE, LAST_NAME_SYNONYMS, INPUT_NAME_LASTNAME)
-        #     if first_name_ok and last_name_ok:
-        #         break
-        #     page.mouse.wheel(0, 1200)
-        #     page.wait_for_timeout(400)
-
-        # # Final attempt without scrolling
-        # if not first_name_ok:
-        #     first_name_ok = try_fill_field_anywhere2(page, FIRST_NAME_VALUE, FIRST_NAME_SYNONYMS, INPUT_NAME_FIRSTNAME)
-        # if not last_name_ok:
-        #     last_name_ok = try_fill_field_anywhere2(page, LAST_NAME_VALUE, LAST_NAME_SYNONYMS, INPUT_NAME_LASTNAME)
-
-        # #assert page.locator("#first_name").input_value(timeout=2000) == "Aziz"
-        # print(f"First name fill: {'OK' if first_name_ok else 'NOT FOUND'}")
-        # print(f"Last name fill: {'OK' if last_name_ok else 'NOT FOUND'}")
 
         for _ in range(12):
             scroll_number += 1
+            print("scroll n° ",scroll_number)
             at_least_one_existing_field_is_empty= False
 
             for key, value, syns, names in fields:
@@ -320,15 +367,16 @@ def run(url: str, headless: bool) -> None:
                 if filled or already:
                     done[key] = True
                 elif present:
+                    print(f"  field {key} is present and still need to be filled")
                     # It exists on the page but isn't filled yet (maybe validation/disabled/etc.)
                     at_least_one_existing_field_is_empty = True
 
             if not at_least_one_existing_field_is_empty:
                 break
             #quick pause
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(500)
             page.mouse.wheel(0, 1200)
-            page.wait_for_timeout(400)
+            page.wait_for_timeout(200)
 
         print(f"Scrolled {scroll_number} times")
         # Final attempt without scrolling
@@ -345,6 +393,13 @@ def run(url: str, headless: bool) -> None:
             else:
                 print(f"Field {key} filled")
 
+        #UPLOAD RESUME:
+        print("trying uploading resume...")
+        ok = try_upload_resume_anywhere(page)
+        if ok:
+            print("✅ Resume uploaded successfully")
+        else:
+            print("⚠️ Could not find any resume upload field")
 
         #capture_full_page_stitched(page, out_dir="out", filename="full_page.png")
         width = page.evaluate("() => document.documentElement.scrollWidth")
@@ -374,3 +429,4 @@ if __name__ == "__main__":
     #python apply2.py --url "https://turnriver.com/careers/openings/?gh_jid=4797921008&gh_src=6857f9d98us"
     #or python apply2.py --url "https://job-boards.greenhouse.io/xai/jobs/4756472007?gh_src=fu0zy1zn7us&source=LinkedIn" --headless
     #python apply2.py --url "https://job-boards.greenhouse.io/xai/jobs/4756472007?gh_src=fu0zy1zn7us&source=LinkedIn"
+    #python apply2.py --url "https://www.metacareers.com/resume/?req=a1KDp00000E2K2TMAV"
