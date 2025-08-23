@@ -13,9 +13,9 @@ from typing import List, NamedTuple, Generator, Optional
 from user_data import *
 from playwright.sync_api import Page, TimeoutError as PWTimeout, Frame, sync_playwright
 from function_utils import *
-from function_utils import _attempt_on_locator, find_field_locator_anywhere
+from function_utils import _attempt_on_locator, find_field_locator_anywhere, _walk_frames
 from take_screenshot import capture_full_page_stitched
-
+from combobox_filler3 import try_select_combobox_anywhere
 
 def _try_upload_in_context(ctx: Page | Frame, file_path: Path) -> bool:
     """
@@ -102,17 +102,6 @@ def _get_greenhouse_frame(page: Page, timeout_ms: int = 10000) -> Optional[Frame
             continue
     return None
 
-def _walk_frames(root: Page | Frame) -> Generator[Frame, None, None]:
-    """Depth-first traversal of all descendant frames (excluding the page itself)."""
-    if isinstance(root, Page):
-        children = list(root.frames)
-        # Page.frames includes main_frame; we skip it below
-    else:
-        children = list(root.child_frames)
-    for fr in children:
-        yield fr
-        # Recurse into nested iframes
-        yield from _walk_frames(fr)
 
 def _try_fill_in_context(ctx: Page | Frame, value: str, synonyms : List[str], input_names : List[str]) -> bool:
     # Try by accessible label
@@ -252,7 +241,7 @@ def try_fill_field_anywhere(page: Page, value: str,
             return res
         
     # 1) Try main document first
-    print("    trying to fill the field in the main document")
+    #print("    trying to fill the field in the main document")
     res = _try_fill_in_context_status(page, value, synonyms, input_names)
     if res.present:
         return res
@@ -345,11 +334,13 @@ def run(url: str, headless: bool) -> None:
         try_click_apply_buttons(page)
 
         fields = [
-            ("first_name",     FIRST_NAME_VALUE,     FIRST_NAME_SYNONYMS,     INPUT_NAME_FIRSTNAME),
-            ("last_name",      LAST_NAME_VALUE,      LAST_NAME_SYNONYMS,      INPUT_NAME_LASTNAME),
-            ("preferred_name", PREFERED_NAME_VALUE,  PREFERED_NAME_SYNONYMS,  INPUT_NAME_PREFEREDNAME),
-            ("phone_number",   PHONE_NUMBER_VALUE,   PHONE_NUMBER_SYNONYMS,   INPUT_NAME_PHONENUMBER),
+            #("first_name",     FIRST_NAME_VALUE,     FIRST_NAME_SYNONYMS,     INPUT_NAME_FIRSTNAME),
+            #("last_name",      LAST_NAME_VALUE,      LAST_NAME_SYNONYMS,      INPUT_NAME_LASTNAME),
+            #("preferred_name", PREFERED_NAME_VALUE,  PREFERED_NAME_SYNONYMS,  INPUT_NAME_PREFEREDNAME),
+            #("phone_number",   PHONE_NUMBER_VALUE,   PHONE_NUMBER_SYNONYMS,   INPUT_NAME_PHONENUMBER),
             ("email",          EMAIL_VALUE,          EMAIL_SYNONYMS,          INPUT_NAME_EMAIL),
+            ("full_name",      FULL_NAME_VALUE,      FULL_NAME_SYNONYMS,      INPUT_NAME_FULLNAME),
+            ("location",       LOCATION_VALUE,       LOCATION_SYNONYMS,       INPUT_NAME_LOCATION),
         ]
 
         done = {key: False for key, *_ in fields} 
@@ -363,7 +354,12 @@ def run(url: str, headless: bool) -> None:
             for key, value, syns, names in fields:
                 if done[key]:
                     continue
+
                 present, filled, already = try_fill_field_anywhere(page, value, syns, names)
+                if not filled and not already:
+                    print(f"  we use combobox filler to fill {key}")
+                    present, filled, already = try_select_combobox_anywhere(page,value,syns,names)
+
                 if filled or already:
                     done[key] = True
                 elif present:

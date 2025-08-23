@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Dict, Optional, NamedTuple
+from typing import Dict, Optional, NamedTuple, Generator
 import json
 from playwright.sync_api import Page, Frame, Locator
 import re
@@ -13,6 +13,20 @@ class FillResult(NamedTuple):
     already_ok: bool      # it already had the desired value
 
 # --- Core helpers ------------------------------------------------------------
+
+
+def _walk_frames(root: Page | Frame) -> Generator[Frame, None, None]:
+    """Depth-first traversal of all descendant frames (excluding the page itself)."""
+    if isinstance(root, Page):
+        children = list(root.frames)
+        # Page.frames includes main_frame; we skip it below
+    else:
+        children = list(root.child_frames)
+    for fr in children:
+        yield fr
+        # Recurse into nested iframes
+        yield from _walk_frames(fr)
+
 def _attempt_on_locator(loc: Locator, value: str) -> FillResult:
     try:
         if loc.count() == 0:

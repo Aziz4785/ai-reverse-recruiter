@@ -62,3 +62,13 @@ FULL_NAME_SYNONYMS: List[str] = [
     "Full Name"
 ]
 INPUT_NAME_FULLNAME = ["full", "full_name", "candidateName", "fullname"]
+
+
+LOCATION_SYNONYMS: List[str] = [
+    "location",
+    "Location",
+    "city",
+    "country",
+    "country",
+]
+INPUT_NAME_LOCATION = ["location", "city", "country", "country"]
