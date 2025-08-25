@@ -58,7 +58,6 @@ INPUT_NAME_EMAIL = ["email", "mail", "email_address", "email_address"]
 FULL_NAME_SYNONYMS: List[str] = [
     "full name",
     "full",
-    "name",
     "Full Name"
 ]
 INPUT_NAME_FULLNAME = ["full", "full_name", "candidateName", "fullname"]

@@ -28,8 +28,9 @@ def _walk_frames(root: Page | Frame) -> Generator[Frame, None, None]:
         yield from _walk_frames(fr)
 
 def _attempt_on_locator(loc: Locator, value: str) -> FillResult:
+    #fill the loc with the value
     try:
-        if loc.count() == 0:
+        if loc.count() == 0: #check if the loc is present
             return FillResult(False, False, False)
         target = loc.first
         try:

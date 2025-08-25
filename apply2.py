@@ -149,14 +149,18 @@ def _try_fill_in_context_status(ctx: Page | Frame, value: str,
     for lt in synonyms:
         try:
             res = _attempt_on_locator(ctx.get_by_role("textbox", name=lt, exact=False), value)
-            if res.present: return res
+            if res.present: 
+                print(f"    we found the locator by using synonyms: {lt} and ctx.get_by_role('textbox', name={lt}, exact=False)")
+                return res
         except Exception:
             pass
 
     # 1) Accessible label
     for lt in synonyms:
         res = _attempt_on_locator(ctx.get_by_label(lt, exact=False), value)
-        if res.present: return res
+        if res.present: 
+            print(f"    we found the locator by using synonyms: {lt} and ctx.get_by_label({lt}, exact=False)")
+            return res
 
     # 1b) Label text → control (covers odd label/for wiring)
     for lt in synonyms:
@@ -164,7 +168,9 @@ def _try_fill_in_context_status(ctx: Page | Frame, value: str,
             ctx.locator(f"label:has-text('{lt}')").locator("input, textarea, [contenteditable='true']"),
             value
         )
-        if res.present: return res
+        if res.present: 
+            print(f"    we found the locator by using synonyms: {lt} and ctx.locator(f'label:has-text('{lt}')').locator('input, textarea, [contenteditable='true']')")
+            return res
 
     # 2) Placeholder (case-insensitive)
     for ph in synonyms:
@@ -172,7 +178,9 @@ def _try_fill_in_context_status(ctx: Page | Frame, value: str,
             ctx.locator(f"input[placeholder*='{ph}' i], textarea[placeholder*='{ph}' i]"),
             value
         )
-        if res.present: return res
+        if res.present: 
+            print(f"    we found the locator by using synonyms: {ph} and ctx.locator(f'input[placeholder*='{ph}' i], textarea[placeholder*='{ph}' i]')")
+            return res
 
     # 3) name= (case-insensitive)
     for name_key in input_names:
@@ -180,7 +188,9 @@ def _try_fill_in_context_status(ctx: Page | Frame, value: str,
             ctx.locator(f"input[name*='{name_key}' i], textarea[name*='{name_key}' i]"),
             value
         )
-        if res.present: return res
+        if res.present: 
+            print(f"    we found the locator by using input_names: {name_key} and ctx.locator(f'input[name*='{name_key}' i], textarea[name*='{name_key}' i]')")
+            return res
 
     # 4) aria-label (case-insensitive)
     for aria in synonyms:
@@ -191,14 +201,17 @@ def _try_fill_in_context_status(ctx: Page | Frame, value: str,
         if res.present: return res
 
     # 5) Generic visible text inputs (common types) + textarea + contenteditable
-    generic_selector = (
-        "input:not([type='hidden']):not([disabled]):is([type='text'],[type='email'],"
-        "[type='tel'],[type='search'],[type='url'],[type='number']), "
-        "textarea, "
-        "[contenteditable='true']"
-    )
-    res = _attempt_on_locator(ctx.locator(generic_selector), value)
-    if res.present: return res
+    #uncomment this only if we really cannot find the locator
+    # generic_selector = (
+    #     "input:not([type='hidden']):not([disabled]):is([type='text'],[type='email'],"
+    #     "[type='tel'],[type='search'],[type='url'],[type='number']), "
+    #     "textarea, "
+    #     "[contenteditable='true']"
+    # )
+    # res = _attempt_on_locator(ctx.locator(generic_selector), value)
+    # if res.present: 
+    #     print(f"    we found the locator by using generic_selector")
+    #     return res
 
     return FillResult(False, False, False)
 
@@ -334,10 +347,10 @@ def run(url: str, headless: bool) -> None:
         try_click_apply_buttons(page)
 
         fields = [
-            #("first_name",     FIRST_NAME_VALUE,     FIRST_NAME_SYNONYMS,     INPUT_NAME_FIRSTNAME),
-            #("last_name",      LAST_NAME_VALUE,      LAST_NAME_SYNONYMS,      INPUT_NAME_LASTNAME),
-            #("preferred_name", PREFERED_NAME_VALUE,  PREFERED_NAME_SYNONYMS,  INPUT_NAME_PREFEREDNAME),
-            #("phone_number",   PHONE_NUMBER_VALUE,   PHONE_NUMBER_SYNONYMS,   INPUT_NAME_PHONENUMBER),
+            ("first_name",     FIRST_NAME_VALUE,     FIRST_NAME_SYNONYMS,     INPUT_NAME_FIRSTNAME),
+            ("last_name",      LAST_NAME_VALUE,      LAST_NAME_SYNONYMS,      INPUT_NAME_LASTNAME),
+            ("preferred_name", PREFERED_NAME_VALUE,  PREFERED_NAME_SYNONYMS,  INPUT_NAME_PREFEREDNAME),
+            ("phone_number",   PHONE_NUMBER_VALUE,   PHONE_NUMBER_SYNONYMS,   INPUT_NAME_PHONENUMBER),
             ("email",          EMAIL_VALUE,          EMAIL_SYNONYMS,          INPUT_NAME_EMAIL),
             ("full_name",      FULL_NAME_VALUE,      FULL_NAME_SYNONYMS,      INPUT_NAME_FULLNAME),
             ("location",       LOCATION_VALUE,       LOCATION_SYNONYMS,       INPUT_NAME_LOCATION),
@@ -346,22 +359,28 @@ def run(url: str, headless: bool) -> None:
         done = {key: False for key, *_ in fields} 
         scroll_number = 0
 
-        for _ in range(12):
+        for _ in range(5):
             scroll_number += 1
             print("scroll n° ",scroll_number)
+            print()
             at_least_one_existing_field_is_empty= False
 
             for key, value, syns, names in fields:
+                print(f"-------{key}-------")
                 if done[key]:
+                    print(f"  field {key} is already filled")
                     continue
-
+                print("   attempting to fill it in a textfield..")
                 present, filled, already = try_fill_field_anywhere(page, value, syns, names)
+                if filled:
+                    print("   ->and yes now it is in a text field")
                 if not filled and not already:
                     print(f"  we use combobox filler to fill {key}")
                     present, filled, already = try_select_combobox_anywhere(page,value,syns,names)
 
                 if filled or already:
                     done[key] = True
+                    print(f"  field {key} is filled")
                 elif present:
                     print(f"  field {key} is present and still need to be filled")
                     # It exists on the page but isn't filled yet (maybe validation/disabled/etc.)
@@ -385,9 +404,9 @@ def run(url: str, headless: bool) -> None:
 
         for key, value, syns, names in fields:
             if not done[key]:
-                print(f"Field {key} not filled")
+                print(f"❌ Field {key} not filled")
             else:
-                print(f"Field {key} filled")
+                print(f"✅ Field {key} filled")
 
         #UPLOAD RESUME:
         print("trying uploading resume...")
@@ -426,3 +445,4 @@ if __name__ == "__main__":
     #or python apply2.py --url "https://job-boards.greenhouse.io/xai/jobs/4756472007?gh_src=fu0zy1zn7us&source=LinkedIn" --headless
     #python apply2.py --url "https://job-boards.greenhouse.io/xai/jobs/4756472007?gh_src=fu0zy1zn7us&source=LinkedIn"
     #python apply2.py --url "https://www.metacareers.com/resume/?req=a1KDp00000E2K2TMAV"
+    #python apply2.py --url "https://job-boards.greenhouse.io/tatari/jobs/8045548002" 
