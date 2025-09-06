@@ -16,7 +16,8 @@ from function_utils import *
 from function_utils import _attempt_on_locator, find_field_locator_anywhere, _walk_frames
 from take_screenshot import capture_full_page_stitched
 from combobox_filler3 import try_select_combobox_anywhere
-
+from input_types import *
+import time
 def _try_upload_in_context(ctx: Page | Frame, file_path: Path) -> bool:
     """
     Attempt to locate a file input (resume/CV upload) inside the given context and upload.
@@ -150,7 +151,7 @@ def _try_fill_in_context_status(ctx: Page | Frame, value: str,
         try:
             res = _attempt_on_locator(ctx.get_by_role("textbox", name=lt, exact=False), value)
             if res.present: 
-                print(f"    we found the locator by using synonyms: {lt} and ctx.get_by_role('textbox', name={lt}, exact=False)")
+                #print(f"    we found the locator by using synonyms: {lt} and ctx.get_by_role('textbox', name={lt}, exact=False)")
                 return res
         except Exception:
             pass
@@ -159,7 +160,7 @@ def _try_fill_in_context_status(ctx: Page | Frame, value: str,
     for lt in synonyms:
         res = _attempt_on_locator(ctx.get_by_label(lt, exact=False), value)
         if res.present: 
-            print(f"    we found the locator by using synonyms: {lt} and ctx.get_by_label({lt}, exact=False)")
+            #print(f"    we found the locator by using synonyms: {lt} and ctx.get_by_label({lt}, exact=False)")
             return res
 
     # 1b) Label text → control (covers odd label/for wiring)
@@ -179,7 +180,7 @@ def _try_fill_in_context_status(ctx: Page | Frame, value: str,
             value
         )
         if res.present: 
-            print(f"    we found the locator by using synonyms: {ph} and ctx.locator(f'input[placeholder*='{ph}' i], textarea[placeholder*='{ph}' i]')")
+            #print(f"    we found the locator by using synonyms: {ph} and ctx.locator(f'input[placeholder*='{ph}' i], textarea[placeholder*='{ph}' i]')")
             return res
 
     # 3) name= (case-insensitive)
@@ -189,7 +190,7 @@ def _try_fill_in_context_status(ctx: Page | Frame, value: str,
             value
         )
         if res.present: 
-            print(f"    we found the locator by using input_names: {name_key} and ctx.locator(f'input[name*='{name_key}' i], textarea[name*='{name_key}' i]')")
+            #print(f"    we found the locator by using input_names: {name_key} and ctx.locator(f'input[name*='{name_key}' i], textarea[name*='{name_key}' i]')")
             return res
 
     # 4) aria-label (case-insensitive)
@@ -354,12 +355,22 @@ def run(url: str, headless: bool) -> None:
             ("email",          EMAIL_VALUE,          EMAIL_SYNONYMS,          INPUT_NAME_EMAIL),
             ("full_name",      FULL_NAME_VALUE,      FULL_NAME_SYNONYMS,      INPUT_NAME_FULLNAME),
             ("location",       LOCATION_VALUE,       LOCATION_SYNONYMS,       INPUT_NAME_LOCATION),
+            ("recent_employer", RECENT_EMPLOYER_VALUE, RECENT_EMPLOYER_SYNONYMS, INPUT_NAME_RECENTEMPLOYER),
         ]
 
         done = {key: False for key, *_ in fields} 
         scroll_number = 0
 
-        for _ in range(5):
+        #UPLOAD RESUME:
+        print("trying uploading resume...")
+        ok = try_upload_resume_anywhere(page)
+        if ok:
+            print("✅ Resume uploaded successfully")
+        else:
+            print("⚠️ Could not find any resume upload field")
+
+        time.sleep(5)
+        for scroll_index in range(1):
             scroll_number += 1
             print("scroll n° ",scroll_number)
             print()
@@ -367,6 +378,9 @@ def run(url: str, headless: bool) -> None:
 
             for key, value, syns, names in fields:
                 print(f"-------{key}-------")
+                input_type = get_input_type_of(page, syns)
+                print(key, "->", input_type.value)
+                #continue
                 if done[key]:
                     print(f"  field {key} is already filled")
                     continue
@@ -374,7 +388,7 @@ def run(url: str, headless: bool) -> None:
                 present, filled, already = try_fill_field_anywhere(page, value, syns, names)
                 if filled:
                     print("   ->and yes now it is in a text field")
-                if not filled and not already:
+                else:
                     print(f"  we use combobox filler to fill {key}")
                     present, filled, already = try_select_combobox_anywhere(page,value,syns,names)
 
@@ -396,11 +410,12 @@ def run(url: str, headless: bool) -> None:
         print(f"Scrolled {scroll_number} times")
         # Final attempt without scrolling
         # Optional: one last pass without scrolling for any stragglers visible now
-        for key, value, syns, names in fields:
-            if not done[key]:
-                present, filled, already = try_fill_field_anywhere(page, value, syns, names)
-                if filled or already:
-                    done[key] = True
+        if False: #see what i can do with thtis code later
+            for key, value, syns, names in fields:
+                if not done[key]:
+                    present, filled, already = try_fill_field_anywhere(page, value, syns, names)
+                    if filled or already:
+                        done[key] = True
 
         for key, value, syns, names in fields:
             if not done[key]:
@@ -408,13 +423,7 @@ def run(url: str, headless: bool) -> None:
             else:
                 print(f"✅ Field {key} filled")
 
-        #UPLOAD RESUME:
-        print("trying uploading resume...")
-        ok = try_upload_resume_anywhere(page)
-        if ok:
-            print("✅ Resume uploaded successfully")
-        else:
-            print("⚠️ Could not find any resume upload field")
+        
 
         #capture_full_page_stitched(page, out_dir="out", filename="full_page.png")
         width = page.evaluate("() => document.documentElement.scrollWidth")
@@ -426,8 +435,8 @@ def run(url: str, headless: bool) -> None:
 
         page.wait_for_timeout(500)  # let layout settle
         page.screenshot(path="out/full_page.png", full_page=False, animations="disabled")
-        browser.close()
-        browser.close()
+
+        #browser.close()
 
 
 def main() -> None:
@@ -446,3 +455,6 @@ if __name__ == "__main__":
     #python apply2.py --url "https://job-boards.greenhouse.io/xai/jobs/4756472007?gh_src=fu0zy1zn7us&source=LinkedIn"
     #python apply2.py --url "https://www.metacareers.com/resume/?req=a1KDp00000E2K2TMAV"
     #python apply2.py --url "https://job-boards.greenhouse.io/tatari/jobs/8045548002" 
+    #python apply2.py --url "https://jobs.lever.co/spotify/21c24edb-f625-4895-ad23-5a6320d54813/apply"
+    #python apply2.py --url "https://job-boards.greenhouse.io/celonis/jobs/6813766003?gh_jid=6813766003&gh_src=e1e6b9893us#application-form"
+    #python apply2.py --url "https://job-boards.greenhouse.io/catapultsports/jobs/7093475"

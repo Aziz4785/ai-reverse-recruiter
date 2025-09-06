@@ -31,9 +31,26 @@ def _score_option(value_tokens_unique: set[str], option_tokens: list[str]) -> tu
     return (score, -len(option_tokens), full_coverage)
 
 def pick_location_suggestion(page: Page, value: str, click_on_best: bool = False, debug: bool = False):
-    # 1) Find and prepare the combobox
-    combobox = page.locator("input[role='combobox'][placeholder*='Location']")
-    combobox.click()
+    # 1) Find and prepare the combobox (robust, non-crashing)
+    try:
+        combobox = page.locator("input[role='combobox'][placeholder*='Location' i]")
+        if combobox.count() == 0:
+            # Fallback: role with accessible name containing location/city
+            combobox = page.get_by_role("combobox", name=re.compile("location|city", re.I))
+        if combobox.count() == 0:
+            # Last resort: any combobox
+            combobox = page.get_by_role("combobox")
+        if combobox.count() == 0:
+            return FillResult(False, False, False)
+        target_input = combobox.first
+        try:
+            target_input.wait_for(state="visible", timeout=2000)
+        except Exception:
+            pass
+        target_input.click(timeout=2000)
+    except Exception as e:
+        print(f"pick_location_suggestion: could not focus combobox: {e}")
+        return FillResult(False, False, False)
 
     # 2) Build a pragmatic value_to_fill (city + first letter of state/country if present)
     parts = [p.strip() for p in value.split(",") if p.strip()]
@@ -47,10 +64,20 @@ def pick_location_suggestion(page: Page, value: str, click_on_best: bool = False
         city = parts[0] if parts else value
         value_to_fill = city
 
-    combobox.fill(value_to_fill)
+    did_fill = False
+    try:
+        target_input.fill(value_to_fill, timeout=2000)
+        did_fill = True
+    except Exception as e:
+        print(f"pick_location_suggestion: fill failed: {e}")
+        return FillResult(True, False, False)
 
     # 3) Wait for suggestions to render
-    page.wait_for_selector("ul._599r li[role='option']")
+    try:
+        page.wait_for_selector("ul._599r li[role='option']", timeout=3000)
+    except Exception:
+        print("pick_location_suggestion: suggestions did not render in time")
+        return FillResult(True, did_fill, False)
 
     # 4) Grab texts of all suggestions
     options = page.locator("ul._599r li[role='option']")
@@ -82,8 +109,12 @@ def pick_location_suggestion(page: Page, value: str, click_on_best: bool = False
 
     if click_on_best:
         # 6) Click the best option
-        options.nth(best_idx).click()
-        return FillResult(True, True, True)
+        try:
+            options.nth(best_idx).click(timeout=2000)
+            return FillResult(True, True, True)
+        except Exception as e:
+            print(f"pick_location_suggestion: clicking best option failed: {e}")
+            return FillResult(True, did_fill, False)
     return FillResult(True, False, False)
 
 def print_location_suggestions_gold(page,value):
