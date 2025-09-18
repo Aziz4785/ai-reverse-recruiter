@@ -134,15 +134,109 @@ class CheckboxField(Field):
 class RadioField(Field):
     input_type = InputType.RADIO
 
+    def _normalize_yes_no(self, value: object) -> str:
+        s = ("" if value is None else str(value)).strip().lower()
+        if s in {"y", "yes", "true", "1", "on"}:
+            return "yes"
+        if s in {"n", "no", "false", "0", "off"}:
+            return "no"
+        # fall back to raw text (still used as case-insensitive)
+        return s or "yes"
+
+    def _try_check(self, loc: Locator) -> bool:
+        """Try to select a target radio; returns True if it looks selected."""
+        try:
+            # If it's a native input[type=radio], prefer check()
+            tag = (loc.evaluate("e => e.tagName && e.tagName.toLowerCase()") or "").lower()
+            typ = (loc.get_attribute("type") or "").lower()
+            if tag == "input" and typ == "radio":
+                loc.check()  # waits for actionable state
+                return True
+        except Exception:
+            pass
+        try:
+            # Fallback click (works for ARIA/custom implementations)
+            loc.click()
+            return True
+        except Exception:
+            return False
+
     def fill(self, value) -> None:
         self._ensure_visible()
         if not self.locator or self.ctx is None:
             return
-        # Prefer ARIA radio by accessible name matching the value
-        target = self.ctx.get_by_role("radio", name=str(value), exact=True)
+
+        wanted = self._normalize_yes_no(value)  # "yes" or "no"
+        # Scope searches to this field/group when possible
+        scope: Locator = self.locator
+
+        # Build a case-insensitive exact-match regex for the visible/accessible text
+        name_rx = re.compile(rf"^\s*{re.escape(wanted)}\s*$", re.I)
+
+        # 1) Prefer ARIA: role="radio" with accessible name
+        target = scope.get_by_role("radio", name=name_rx)
         if target.count() == 0:
-            target = self.ctx.locator("[role='radio']", has_text=str(value)).first
-        target.click()
+            # Some libraries don't expose an accessible name; try text content
+            target = scope.locator("[role='radio']", has_text=name_rx)
+        if target.count() > 0 and self._try_check(target.first):
+            return
+
+        # 2) Native input radios: by value attribute (try common casings)
+        for v in {wanted, wanted.capitalize(), wanted.upper(), wanted.lower(), wanted.title()}:
+            cand = scope.locator(f"input[type='radio'][value='{v}']")
+            if cand.count() > 0 and self._try_check(cand.first):
+                return
+
+        # 3) Angular Material: <mat-radio-button> text → inner input
+        mat_btn = scope.locator("mat-radio-button", has_text=name_rx).first
+        if mat_btn.count() > 0:
+            inner = mat_btn.locator("input[type='radio']").first
+            if inner.count() > 0 and self._try_check(inner):
+                return
+            # If inner input not found/actionable, click the button itself
+            if self._try_check(mat_btn):
+                return
+
+        # 4) Labels associated to inputs (native pattern)
+        label = scope.locator("label", has_text=name_rx).first
+        if label.count() > 0:
+            # Prefer clicking the label—it toggles the associated input safely
+            try:
+                label.click()
+                return
+            except Exception:
+                pass
+            # If clicking label fails, try its 'for' target directly
+            try:
+                for_id = label.get_attribute("for")
+                if for_id:
+                    assoc = scope.locator(f"#{for_id}")
+                    if assoc.count() > 0 and self._try_check(assoc.first):
+                        return
+            except Exception:
+                pass
+
+        # 5) Last resort: search any descendant input[type=radio] whose
+        #    nearest visible label text matches
+        radios = scope.locator("input[type='radio']")
+        count = radios.count()
+        for i in range(count):
+            r = radios.nth(i)
+            # Try to locate a sibling/ancestor label text
+            candidate = r.locator("xpath=ancestor::*[self::mat-radio-button or @role='radio' or @role='radiogroup'] | ..")
+            if candidate.count() == 0:
+                candidate = r.locator("..")
+            try:
+                txt = (candidate.first.inner_text(timeout=500) or "").strip()
+            except Exception:
+                txt = ""
+            if re.search(name_rx, txt or "", flags=0):
+                if self._try_check(r):
+                    return
+
+        # If we reach here, we couldn't find a matching option.
+        # Surface a clear error for the caller/logs.
+        raise ValueError(f"Radio option not found for value '{value}' within this field.")
 
 
 class SelectField(Field):
@@ -177,19 +271,19 @@ class AriaComboBoxField(Field):
         # combo = page.get_by_role("combobox", name=combobox_name)
         # combo.scroll_into_view_if_needed()
         # combo.click()
-        print("click_all_optgroups : clicked the combobox")
+        #print("click_all_optgroups : clicked the combobox")
         # 2) Wait for the overlayed listbox (the open panel) to appear
         #    We scope to the overlay container & require "open" surface to avoid stale panels
         overlay = page.locator("div.cdk-overlay-container div[role='listbox'].mdc-menu-surface--open").first
         expect(overlay).to_be_visible()
-        print("click_all_optgroups : the overlay is visible")
+        #print("click_all_optgroups : the overlay is visible")
         # Optional: ensure the panel is scrolled to top before we start
         overlay.evaluate("el => el.scrollTo(0, 0)")
-        print("click_all_optgroups : the overlay is scrolled to top")
+        #print("click_all_optgroups : the overlay is scrolled to top")
         # 3) Click every optgroup label
         groups = overlay.get_by_role("group")  # mat-optgroup has role="group"
         count = groups.count()
-        print("click_all_optgroups : the groups are found")
+        #print("click_all_optgroups : the groups are found")
         for i in range(count):
             # Re-query each time in case DOM shifts after clicks/animations
             group = overlay.get_by_role("group").nth(i)
@@ -201,8 +295,8 @@ class AriaComboBoxField(Field):
 
             try:
                 label_locator.click()
-                print(f"click_all_optgroups : clicked the label {label_locator}")
-                time.sleep(4)
+                #print(f"click_all_optgroups : clicked the label {label_locator}")
+                time.sleep(1)
             except Exception:
                 # If the panel closed or click failed, reopen and retry once
                 combo = page.get_by_role("combobox", name=combobox_name)
@@ -253,12 +347,12 @@ class AriaComboBoxField(Field):
                 target_opt = options.nth(best_idx)
                 target_opt.scroll_into_view_if_needed()
                 target_opt.click()
-                #print(f"Selected option in group {gi} with score {best_score:.3f}")
+                ##print(f"Selected option in group {gi} with score {best_score:.3f}")
                 return  # stop after selecting the best acceptable option
 
-        print("No option met the similarity threshold; nothing was clicked.")
+        #print("No option met the similarity threshold; nothing was clicked.")
     def fill(self, value) -> None:
-        print("filling a aria combobox...")
+        #print("filling a aria combobox...")
         self._ensure_visible()
         if not self.locator:
             return
@@ -267,7 +361,7 @@ class AriaComboBoxField(Field):
         # If there's an inner input, type to filter
         inner = self.locator.locator("input, [contenteditable='true']").first
         if inner.count() > 0:
-            print("filling the inner input...with value", value)
+            #print("filling the inner input...with value", value)
             inner.fill("")
             inner.type(str(value))
         else:
@@ -287,7 +381,7 @@ class AriaComboBoxField(Field):
             pass
 
         if is_angular_material:
-            print("filling a angular material combobox...")
+            #print("filling a angular material combobox...")
             #self.select_contractor(self.ctx, value)
             self.click_all_optgroups(self.ctx, value)
             return
@@ -295,16 +389,16 @@ class AriaComboBoxField(Field):
         # Prefer role=option in the same context (handles portals if ctx is a Page)
         option = None
         if self.ctx is not None:
-            print("finding the option in the same context...")
+            #print("finding the option in the same context...")
             option = self.ctx.get_by_role("option", name=str(value), exact=True)
-            print("lets ccheck : ")
+            #print("lets ccheck : ")
             if option.count() == 0:
-                print("no option found with first try")
+                #print("no option found with first try")
                 option = self.ctx.locator("[role='option']", has_text=str(value)).first
         else:
-            print("no context found")
+            #print("no context found")
             option = self.locator.locator("[role='option']", has_text=str(value)).first
-        print("clicking the option...")
+        #print("clicking the option...")
         option.click()
 
 
@@ -321,7 +415,7 @@ class CustomComboBoxField(Field):
     input_type = InputType.CUSTOM_COMBOBOX
     
     def fill(self, value) -> None:
-        print("filling a custom combobox...")
+        #print("filling a custom combobox...")
         self._ensure_visible()
         if not self.locator:
             return
@@ -348,11 +442,11 @@ class CustomComboBoxField(Field):
             # Prefer ARIA roles if exposed
             option = self.ctx.get_by_role("option", name=str(value), exact=True)
             if option.count() == 0:
-                print("no option found with first try")
+                #print("no option found with first try")
                 option = self.ctx.locator("[role='option']", has_text=str(value)).first
             # Many libs render listbox/menuitem options
             if option.count() == 0:
-                print("no option found with second try")
+                #print("no option found with second try")
                 option = self.ctx.locator("[role='listbox'] [role='option'], [role='menu'] [role='menuitem']", has_text=str(value)).first
         else:
             option = self.locator.locator("[role='option']", has_text=str(value)).first

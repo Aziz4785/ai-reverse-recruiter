@@ -32,22 +32,23 @@ def main():
         country_of_that_job  = extract_job_country(page_text,COUNTRY_KEYWORDS)
 
         fields = [
-                    # ("first_name",     FIRST_NAME_VALUE,     FIRST_NAME_SYNONYMS),
-                    # ("last_name",      LAST_NAME_VALUE,      LAST_NAME_SYNONYMS,    ),
-                    # ("preferred_name", PREFERED_NAME_VALUE,  PREFERED_NAME_SYNONYMS  ),
-                    # ("phone_number",   PHONE_NUMBER_VALUE,   PHONE_NUMBER_SYNONYMS, ),
-                    # ("email",          EMAIL_VALUE,          EMAIL_SYNONYMS,         ),
-                    # ("full_name",      FULL_NAME_VALUE,      FULL_NAME_SYNONYMS,     ),
-                    # ("location",       LOCATION_VALUE,       LOCATION_SYNONYMS,       ),
-                    # ("recent_employer", RECENT_EMPLOYER_VALUE, RECENT_EMPLOYER_SYNONYMS),
+                    ("first_name",     FIRST_NAME_VALUE,     FIRST_NAME_SYNONYMS),
+                    ("last_name",      LAST_NAME_VALUE,      LAST_NAME_SYNONYMS,    ),
+                    ("preferred_name", PREFERED_NAME_VALUE,  PREFERED_NAME_SYNONYMS  ),
+                    ("phone_number",   PHONE_NUMBER_VALUE,   PHONE_NUMBER_SYNONYMS, ),
+                    ("email",          EMAIL_VALUE,          EMAIL_SYNONYMS,         ),
+                    ("full_name",      FULL_NAME_VALUE,      FULL_NAME_SYNONYMS,     ),
+                    ("location",       LOCATION_VALUE,       LOCATION_SYNONYMS,       ),
+                    ("recent_employer", RECENT_EMPLOYER_VALUE, RECENT_EMPLOYER_SYNONYMS),
                     ("email_confirmation", EMAIL_CONFIRMATION_VALUE, EMAIL_CONFIRMATION_SYNONYMS),
                     ("sponsorship_yes_no", requires_sponsorship(country_of_that_job), SPONSORSHIP_SYNONYMS),
                     ("hear_about_us", HEAR_ABOUT_US_VALUE, HEAR_ABOUT_US_SYNONYMS, ),
+                    ("did_you_work_previously", DID_YOU_WORK_PREVIOUSLY_VALUE, DID_YOU_WORK_PREVIOUSLY_SYNONYMS),
                 ]
 
         for key, value, syns in fields:
             print(f"-------{key}-------")
-            field =  get_field_of(page, syns)
+            field =  get_field_of(page, key, syns)
             print(key, "->", field.input_type.value)
 
             if not field.is_found:

@@ -57,6 +57,113 @@ def _first_visible(loc: Locator) -> Optional[Locator]:
             continue
     return None
 
+# Compact multilingual patterns for the question
+QUESTION_RE = re.compile(
+    "|".join([
+        # English
+        r"have\s+you\s+(?:ever\s+)?worked\s+(?:here|for\s+us|for\s+this\s+company|with\s+us)\b",
+        r"did\s+you\s+work\s+(?:previously|before)\b",
+        r"previous(?:ly)?\s+employed\b",
+        r"are\s+you\s+(?:a\s+)?former\s+employee\b",
+        r"are\s+you\s+currently\s+employed\s+by\b",
+        r"have\s+you\s+previously\s+been\s+employed\b",
+        # French
+        r"avez[-\s]vous\s+d[ée]j[àa]\s+travaill[ée]\s+(?:ici|pour\s+(?:nous|cette\s+entreprise))\b",
+        r"ancien\s+employ[ée]\b",
+        # Spanish
+        r"ha\s+trabajado\s+anteriormente\s+(?:aqu[ií]|para\s+(?:nosotros|esta\s+empresa))\b",
+        r"empleado\s+anteriormente\b",
+        # German
+        r"haben\s+sie\s+(?:schon\s+einmal|bereits)\s+(?:hier|f[uü]r\s+uns|f[uü]r\s+dieses\s+unternehmen)\s+gearbeitet\b",
+        r"ehemalige[rs]?\s+mitarbeiter\b",
+        # Italian
+        r"ha\s+mai\s+lavorato\s+(?:qui|per\s+noi)\b",
+        # Portuguese
+        r"j[aá]\s+trabalhou\s+(?:aqui|conosco|para\s+n[oó]s)\b",
+    ]),
+    re.I
+)
+YES_RE = re.compile(r"\b(yes|oui|sí|si|ja|sim)\b", re.I)
+NO_RE  = re.compile(r"\b(no|non|nein|não)\b", re.I)
+
+def _guess_yes_no(scope: Locator) -> tuple[Optional[Locator], Optional[Locator]]:
+    yes = scope.get_by_role("radio", name=YES_RE).first
+    no  = scope.get_by_role("radio", name=NO_RE).first
+    if yes.count() == 0:
+        yes = scope.locator('input[type="radio"], button, [role="radio"]').filter(has_text=YES_RE).first
+    if no.count() == 0:
+        no = scope.locator('input[type="radio"], button, [role="radio"]').filter(has_text=NO_RE).first
+    return (yes if yes.count() else None,
+            no  if no.count()  else None)
+
+
+def find_prior_employment_question(page: Page):
+    """
+    Locate the 'Have you worked here before?' question.
+    Returns PriorEmploymentLocators(group, yes?, no?) or None if not found.
+    """
+
+    # 1) A11y-first: radiogroup/group/fieldset by accessible name or text
+    aria_candidates = [
+        page.get_by_role("radiogroup", name=QUESTION_RE),
+        page.get_by_role("group", name=QUESTION_RE),
+        page.locator("fieldset").filter(has_text=QUESTION_RE),
+    ]
+    for cand in aria_candidates:
+        if cand.first.count():
+            group = cand.first
+            #yes, no = await _guess_yes_no(group)
+            print("find_prior_employment_question : found a group using aria-first")
+            return group
+
+    # 2) Find a label-ish element, then climb to its nearest group
+    labelish = page.locator(
+        ",".join([
+            "label",
+            "legend",
+            '[role="label"]',
+            "mat-label",
+            ".question-text",
+            ".field-label",
+        ])
+    ).filter(has_text=QUESTION_RE)
+
+    if labelish.first.count():
+        label = labelish.first
+        # climb to the nearest likely group container
+        group = label.locator(
+            'xpath=ancestor::*['
+            '@role="radiogroup" or '
+            'self::fieldset or '
+            'contains(concat(" ", normalize-space(@class), " "), " mat-mdc-radio-group ") or '
+            'contains(concat(" ", normalize-space(@class), " "), " radio-group ")'
+            '][1]'
+        )
+        if group.count():
+            #yes, no = await _guess_yes_no(group)
+            print("find_prior_employment_question : found a group using label-ish")
+            return group
+
+    # 3) Last resort: any radio whose accessible name contains the question
+    radios = page.get_by_role("radio", name=QUESTION_RE)
+    if radios.first.count():
+        any_radio = radios.first
+        group = any_radio.locator(
+            'xpath=ancestor::*['
+            '@role="radiogroup" or '
+            'self::fieldset or '
+            'contains(concat(" ", normalize-space(@class), " "), " mat-mdc-radio-group ") or '
+            'contains(concat(" ", normalize-space(@class), " "), " radio-group ") or '
+            'contains(concat(" ", normalize-space(@class), " "), " mdc-form-field ")'
+            '][1]'
+        )
+        final_group = group if  group.count() else any_radio
+        #yes, no = await _guess_yes_no(final_group)
+        print("find_prior_employment_question : found a group using any radio")
+        return final_group
+    print("find_prior_employment_question : no group found")
+    return None
+
 def _find_first_matching_field(ctx: Page | Frame, synonyms: List[str]) -> Optional[Locator]:
     candidates: List[Locator] = []
 
@@ -68,6 +175,7 @@ def _find_first_matching_field(ctx: Page | Frame, synonyms: List[str]) -> Option
         # Correct role for a plain email input
         candidates.append(ctx.get_by_role("textbox", name=s, exact=True))
         candidates.append(ctx.locator(f"[id='{s}'], [attrid='{s}'], [formcontrolname='{s}']"))
+        #candidates.append(find_prior_employment_question(ctx))
          # ---- NEW: prefer text inputs for phone-like labels ----
         if re.search(r"\b(phone|téléphone|mobile|cell)\b", s, re.I):
             # Direct aria-label match (Angular Material uses this a lot)
@@ -79,7 +187,7 @@ def _find_first_matching_field(ctx: Page | Frame, synonyms: List[str]) -> Option
             # Role-based textbox (kept exact to avoid grabbing “Phone Extension” unless you pass it)
             candidates.append(ctx.get_by_role("textbox", name=s, exact=True))
 
-    #print("we have ", len(candidates), "candidates from the strong signals")
+    ##print("we have ", len(candidates), "candidates from the strong signals")
     # Fallbacks: placeholder/name
     for s in synonyms:
         candidates.append(ctx.locator(f"input[placeholder='{s}' i], select[placeholder='{s}' i]")) #replace = with *= if you want to be more flexible
@@ -90,8 +198,9 @@ def _find_first_matching_field(ctx: Page | Frame, synonyms: List[str]) -> Option
     for j,loc in enumerate(candidates):
         cand = _first_visible(loc)
         if cand:
-            print("  the valid locator is at index ", j , " 0-indexed")
+            #print("  the valid locator is at index ", j , " 0-indexed")
             return cand
+    print("no valid candidates found")
     return None
 
 def _tag_name(el: Locator) -> str:
@@ -120,7 +229,7 @@ def _proper_aria_combobox(el: Locator) -> bool:
     role = (el.get_attribute("role") or "").lower()
     haspopup = (el.get_attribute("aria-haspopup") or "").lower()
     if role == "combobox" or haspopup == "listbox":
-        #print("it is a combobox because of ARIA combobox pattern")
+        ##print("it is a combobox because of ARIA combobox pattern")
         return True
     return False
 
@@ -146,62 +255,91 @@ def _nearby_custom_dropdown(ctx: Page | Frame, el: Locator) -> bool:
         # immediate ancestor to scope relative searches
         #root = el.locator("xpath=ancestor-or-self::*[1]")
         root = el.locator("xpath=ancestor::*[contains(@class,'application') or self::form or self::div][1]")
-        print("root :")
-        print_html_element(root)
+        #print("root :")
+        #print_html_element(root)
 
         # hidden or tracking input nearby
         has_hidden_type = root.locator("input[type='hidden']").count() > 0
         if has_hidden_type:
-            print("_nearby_custom_dropdown return true because we have a nearby input[@type='hidden']")
+            #print("_nearby_custom_dropdown return true because we have a nearby input[@type='hidden']")
             return True
         has_hidden_attr = root.locator("xpath=following::input[@hidden]").first.count() > 0
         if has_hidden_attr:
-            print("_nearby_custom_dropdown return true because we have a nearby input[@hidden]")
+            #print("_nearby_custom_dropdown return true because we have a nearby input[@hidden]")
             return True
         # dropdown-ish siblings/descendants
         has_dropdown_cls = root.locator("xpath=.//*[contains(@class,'dropdown')]").first.count() > 0
         if has_dropdown_cls:
-            print("_nearby_custom_dropdown return true because we found a .//* with class 'dropdown'")
+            #print("_nearby_custom_dropdown return true because we found a .//* with class 'dropdown'")
             return True
         has_typeahead_cls = root.locator("xpath=.//*[contains(@class,'typeahead')]").first.count() > 0
         if has_typeahead_cls:
-            print("_nearby_custom_dropdown return true because we found a following::* with class 'typeahead'")
+            #print("_nearby_custom_dropdown return true because we found a following::* with class 'typeahead'")
             return True
         has_autocomplete_cls = root.locator("xpath=.//*[contains(@class,'autocomplete')]").first.count() > 0
         if has_autocomplete_cls:
-            print("_nearby_custom_dropdown return true because we found a following::* with class 'autocomplete'")
+            #print("_nearby_custom_dropdown return true because we found a following::* with class 'autocomplete'")
             return True
         has_results_cls = root.locator("xpath=following::*[contains(@class,'results')]").first.count() > 0
         if has_results_cls:
-            print("_nearby_custom_dropdown return true because we found a following::* with class 'results'")
+            #print("_nearby_custom_dropdown return true because we found a following::* with class 'results'")
             return True
     except Exception:
         pass
     return False
 
+def _is_radio_like(el: Locator) -> bool:
+    # tagName
+    tag = (el.evaluate("e => e.tagName && e.tagName.toLowerCase()") or "").lower()
+    # type / role
+    typ = (el.get_attribute("type") or "").lower()
+    role = (el.get_attribute("role") or "").lower()
+
+    # 1) Native input[type=radio]
+    if tag == "input" and typ == "radio":
+        return True
+
+    # 2) Common wrapper custom elements / libraries
+    if tag in ("mat-radio-group", "md-radio-group"):
+        return True
+
+    # 3) ARIA semantics applied directly
+    if role in ("radio", "radiogroup"):
+        return True
+
+    # 4) Custom wrappers that *contain* radios
+    try:
+        if el.locator('input[type="radio"], [role="radio"]').first.count() > 0:
+            return True
+    except Exception:
+        pass
+
+    return False
+
 def _classify_field(ctx: Page | Frame, el: Locator) -> InputType:
-    print("_classify_field()")
+    #print("_classify_field()")
     tag = _tag_name(el)
     attr_id = _attr(el, "id")
     attr_name = _attr(el, "name")
-    print("tag :", tag)
-    #print("Locator repr:", el)  # shows frame + selector
-    print("tag:",tag)
-    print("id:", attr_id)
-    print("name:", attr_name)
-    # print("class:", _attr(el, "class"))
-    # print("role:", _attr(el, "role"))
-    # print("aria-autocomplete:", _attr(el, "aria-autocomplete"))
-    # print("placeholder:", _attr(el, "placeholder"))
+    #print("tag :", tag)
+    ##print("Locator repr:", el)  # shows frame + selector
+    #print("tag:",tag)
+    #print("id:", attr_id)
+    #print("name:", attr_name)
+    # #print("class:", _attr(el, "class"))
+    # #print("role:", _attr(el, "role"))
+    # #print("aria-autocomplete:", _attr(el, "aria-autocomplete"))
+    # #print("placeholder:", _attr(el, "placeholder"))
     # Native select
-    print_html_element(el)
+    print("_classify_field..")
+    #print_html_element(el)
     if tag == "select":
-        print("it is a combobox because we have a select tag")
+        #print("it is a combobox because we have a select tag")
         return InputType.COMBOBOX
 
     # input + datalist
     if tag == "input" and _has_datalist(ctx, el):
-        print("it is a combobox because we have a input tag with a datalist")
+        #print("it is a combobox because we have a input tag with a datalist")
         return InputType.COMBOBOX
 
     if _proper_aria_combobox(el):
@@ -210,10 +348,14 @@ def _classify_field(ctx: Page | Frame, el: Locator) -> InputType:
     if _aria_combobox_like(el):
         return InputType.COMBOBOX if _aria_listbox_wired(ctx, el) else InputType.CUSTOM_COMBOBOX
 
+    if _is_radio_like(el):
+        return InputType.RADIO  # or InputType.RADIOGROUP if you distinguish at the enum level
+
+
     # Custom dropdown patterns near a text input
     if tag == "input":
         if _nearby_custom_dropdown(ctx, el):
-            print("it is a combobox because we have a input tag with a nearby custom dropdown")
+            #print("it is a combobox because we have a input tag with a nearby custom dropdown")
             return InputType.CUSTOM_COMBOBOX
 
         return InputType.TEXTBOX
@@ -223,7 +365,7 @@ def _classify_field(ctx: Page | Frame, el: Locator) -> InputType:
     return InputType.TEXTBOX
 
 
-def get_field_of(page: Page, synonyms: List[str]) -> Field:
+def get_field_of(page: Page, key: str, synonyms: List[str]) -> Field:
     """Return a concrete :class:`Field` instance ready to ``fill(value)``.
 
 
@@ -231,14 +373,18 @@ def get_field_of(page: Page, synonyms: List[str]) -> Field:
     provided synonyms, classifies it, and returns the appropriate object.
     """
     for ctx in _all_contexts(page):
-        loc = _find_first_matching_field(ctx, synonyms)
-        print_html_element(loc)
+        if key == "did_you_work_previously":
+            print("did_you_work_previously : finding the field")
+            loc = find_prior_employment_question(ctx)
+        else:
+            loc = _find_first_matching_field(ctx, synonyms)
+        #print_html_element(loc)
         if not loc:
             continue
         try:
             loc.wait_for(state="attached", timeout=800)
             input_type = _classify_field(ctx, loc)
-            print("classify_field return ", input_type)
+            #print("classify_field return ", input_type)
             # Prefer exact enum-key match; fall back to name/value strings
             name = getattr(input_type, "name", None) or getattr(input_type, "value", None) or str(input_type)
 
@@ -246,11 +392,11 @@ def get_field_of(page: Page, synonyms: List[str]) -> Field:
                 name = name.split(".")[-1].upper()
             else:
                 print("name is not a string")
-            print("name :", name)
+            #print("name :", name)
             field_cls = FIELD_REGISTRY.get(input_type) or FIELD_REGISTRY_BY_NAME.get(name, TextField)
-            print("field_cls :", field_cls)
+            #print("field_cls :", field_cls)
             return field_cls(ctx, loc)
         except Exception as e:
-            print("exception in get_field_of", e)
+            #print("exception in get_field_of", e)
             continue
     return NotFoundField()
