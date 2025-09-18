@@ -32,18 +32,23 @@ def main():
         country_of_that_job  = extract_job_country(page_text,COUNTRY_KEYWORDS)
 
         fields = [
-                    ("first_name",     FIRST_NAME_VALUE,     FIRST_NAME_SYNONYMS),
-                    ("last_name",      LAST_NAME_VALUE,      LAST_NAME_SYNONYMS,    ),
-                    ("preferred_name", PREFERED_NAME_VALUE,  PREFERED_NAME_SYNONYMS  ),
+                    # ("first_name",     FIRST_NAME_VALUE,     FIRST_NAME_SYNONYMS),
+                    # ("last_name",      LAST_NAME_VALUE,      LAST_NAME_SYNONYMS,    ),
+                    # ("preferred_name", PREFERED_NAME_VALUE,  PREFERED_NAME_SYNONYMS  ),
+                    ("country_phone_code", COUNTRY_PHONE_CODE_VALUE, COUNTRY_PHONE_CODE_SYNONYMS),
                     ("phone_number",   PHONE_NUMBER_VALUE,   PHONE_NUMBER_SYNONYMS, ),
-                    ("email",          EMAIL_VALUE,          EMAIL_SYNONYMS,         ),
-                    ("full_name",      FULL_NAME_VALUE,      FULL_NAME_SYNONYMS,     ),
-                    ("location",       LOCATION_VALUE,       LOCATION_SYNONYMS,       ),
-                    ("recent_employer", RECENT_EMPLOYER_VALUE, RECENT_EMPLOYER_SYNONYMS),
-                    ("email_confirmation", EMAIL_CONFIRMATION_VALUE, EMAIL_CONFIRMATION_SYNONYMS),
-                    ("sponsorship_yes_no", requires_sponsorship(country_of_that_job), SPONSORSHIP_SYNONYMS),
-                    ("hear_about_us", HEAR_ABOUT_US_VALUE, HEAR_ABOUT_US_SYNONYMS, ),
-                    ("did_you_work_previously", DID_YOU_WORK_PREVIOUSLY_VALUE, DID_YOU_WORK_PREVIOUSLY_SYNONYMS),
+                    # ("email",          EMAIL_VALUE,          EMAIL_SYNONYMS,         ),
+                    # ("full_name",      FULL_NAME_VALUE,      FULL_NAME_SYNONYMS,     ),
+                    # ("location",       LOCATION_VALUE,       LOCATION_SYNONYMS,       ),
+                    # ("recent_employer", RECENT_EMPLOYER_VALUE, RECENT_EMPLOYER_SYNONYMS),
+                    # ("email_confirmation", EMAIL_CONFIRMATION_VALUE, EMAIL_CONFIRMATION_SYNONYMS),
+                    # ("sponsorship_yes_no", requires_sponsorship(country_of_that_job), SPONSORSHIP_SYNONYMS),
+                    #("hear_about_us", HEAR_ABOUT_US_VALUE, HEAR_ABOUT_US_SYNONYMS, ),
+                    # ("did_you_work_previously", DID_YOU_WORK_PREVIOUSLY_VALUE, DID_YOU_WORK_PREVIOUSLY_SYNONYMS),
+                    # ("complete_address", COMPLETE_ADDRESS_VALUE, COMPLETE_ADDRESS_SYNONYMS),
+                    # ("city", CITY_VALUE, CITY_SYNONYMS),
+                    # ("postal_code", POSTAL_CODE_VALUE, POSTAL_CODE_SYNONYMS),
+                    
                 ]
 
         for key, value, syns in fields:
@@ -54,6 +59,14 @@ def main():
             if not field.is_found:
                 print(f"  field {key} is not found")
                 continue
+            
+            if key == "country_phone_code" and field.is_found:
+                #remove the phone code from the value of phone_number
+                #in fields replace the value of phone_number with the value of phone_number_no_code
+                print("country_phone_code is found so we will replace the value of phone_number with the value of phone_number_no_code")
+                
+            elif key == "country_phone_code":
+                print("country_phone_code is not found")
 
             # OOP one-liner 🎯
             field.fill(value)

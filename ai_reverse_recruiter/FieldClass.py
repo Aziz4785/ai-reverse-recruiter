@@ -283,6 +283,9 @@ class AriaComboBoxField(Field):
         # 3) Click every optgroup label
         groups = overlay.get_by_role("group")  # mat-optgroup has role="group"
         count = groups.count()
+        if count == 0:
+            print("click_all_optgroups : no groups found")
+            return False
         #print("click_all_optgroups : the groups are found")
         for i in range(count):
             # Re-query each time in case DOM shifts after clicks/animations
@@ -330,6 +333,7 @@ class AriaComboBoxField(Field):
                 if "linkedin" in txt.casefold():
                     best_idx = oi
                     best_score = 1.0
+                    return True
                     break
 
             # Otherwise compute similarity for all options and pick the top one
@@ -348,9 +352,37 @@ class AriaComboBoxField(Field):
                 target_opt.scroll_into_view_if_needed()
                 target_opt.click()
                 ##print(f"Selected option in group {gi} with score {best_score:.3f}")
-                return  # stop after selecting the best acceptable option
-
+                return True  # stop after selecting the best acceptable option
+        return True
         #print("No option met the similarity threshold; nothing was clicked.")
+    def click_best_option(self, page: Page, value: str) -> bool:
+        print("click_best_option: clicking the best option")
+        options = page.locator("mat-option[role='option']")
+        option_count = options.count()
+        if option_count == 0:
+            print("click_best_option: no options found")
+            return False
+
+        best_index = None
+        best_score = 0.0
+
+        for i in range(option_count):
+            txt = options.nth(i).inner_text().strip()
+            score = string_similarity(txt, value)
+            if score > best_score:
+                best_score = score
+                best_index = i
+
+        if best_index is not None:
+            best_option = options.nth(best_index)
+            print(f"click_best_option: clicking '{best_option.inner_text()}' (score={best_score:.2f})")
+            best_option.click()
+            return True
+        else:
+            print("click_best_option: no suitable option found")
+            return False
+
+        #use this function to click the best option score = string_similarity(txt, value)
     def fill(self, value) -> None:
         #print("filling a aria combobox...")
         self._ensure_visible()
@@ -381,10 +413,11 @@ class AriaComboBoxField(Field):
             pass
 
         if is_angular_material:
-            #print("filling a angular material combobox...")
-            #self.select_contractor(self.ctx, value)
-            self.click_all_optgroups(self.ctx, value)
-            return
+            print("filling a angular material combobox...")
+            if self.click_all_optgroups(self.ctx, value):
+                return
+            if self.click_best_option(self.ctx, value):
+                return
 
         # Prefer role=option in the same context (handles portals if ctx is a Page)
         option = None

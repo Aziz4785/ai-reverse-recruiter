@@ -397,6 +397,6 @@ def get_field_of(page: Page, key: str, synonyms: List[str]) -> Field:
             #print("field_cls :", field_cls)
             return field_cls(ctx, loc)
         except Exception as e:
-            #print("exception in get_field_of", e)
+            print("exception in get_field_of", e)
             continue
     return NotFoundField()
