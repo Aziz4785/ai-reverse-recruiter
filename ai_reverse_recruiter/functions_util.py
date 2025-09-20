@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Dict, Optional, Generator, List
 from dataclasses import dataclass
 import json
-from playwright.sync_api import Page, Frame, Locator
+from playwright.sync_api import Page, Frame, Locator, Error
 import re
 from collections import Counter
 from user_data import *
@@ -26,6 +26,21 @@ def _norm(s: str) -> str:
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     return re.sub(r"\s+", " ", s).strip().lower()
 
+
+def _first_visible(loc: Locator) -> Optional[Locator]:
+    try:
+        n = loc.count()
+    except Exception:
+        return None
+    for i in range(n):
+        cand = loc.nth(i)
+        try:
+            if cand.is_visible():
+                return cand
+        except Exception:
+            continue
+    return None
+    
 def requires_sponsorship(country: str) -> str:
     if country == "France":
         return SPONSORSHIP_FRANCE_VALUE
@@ -226,3 +241,66 @@ def select_from_mat_select(frame_or_page, desired_text: str, timeout=10000):
         # Typeahead: jump to item and select
         frame_or_page.keyboard.type(texts[idx][:10])
         frame_or_page.keyboard.press("Enter")
+
+
+def _first_interactable(loc: Locator) -> Optional[Locator]:
+    try:
+        count = loc.count()
+    except Error:
+        return None
+    for i in range(min(count, 25)):
+        cand = loc.nth(i)
+        try:
+            if cand.is_visible() and not cand.is_disabled():
+                return cand
+        except Error:
+            continue
+    return None
+
+
+def _fuzzy_score(option: str, target: str) -> float:
+    """
+    Higher is better.
+    1000 exact, 800 startswith, 700 contains, else 0..600 via simple similarity.
+    (Keeps it dependency-free; good enough for UI option picking.)
+    """
+    o = _norm(option)
+    t = _norm(target)
+    if o == t:
+        return 1000.0
+    if o.startswith(t) or t.startswith(o):
+        return 800.0 - abs(len(o) - len(t)) * 0.5
+    if t in o or o in t:
+        return 700.0 - abs(len(o) - len(t)) * 0.2
+    # fallback: token overlap + char overlap
+    ot, tt = set(o.split()), set(t.split())
+    token_overlap = len(ot & tt) / max(1, len(ot | tt))
+    char_overlap = len(set(o) & set(t)) / max(1, len(set(o) | set(t)))
+    return 600.0 * (0.65 * token_overlap + 0.35 * char_overlap)
+
+def _ashby_ctx(page: Page | Frame) -> Frame | Page:
+    # If there’s an ashby iframe, return its frame; otherwise return the given page/frame.
+    fl = page.frame_locator("iframe[src*='ashby']")
+    try:
+        # If it exists, switch; otherwise keep page.
+        frame = fl.first.frame()
+        return frame or page
+    except Exception:
+        return page
+
+def _label_text_for_input(ctx: Page | Frame, inp: Locator) -> str:
+    """Try to get the visible label text associated with the input."""
+    try:
+        # If input has id, look for <label for="...">
+        _id = inp.get_attribute("id")
+        if _id:
+            lab = ctx.locator(f"label[for='{_id}']")
+            if lab.count() > 0 and lab.first.is_visible():
+                return (lab.first.inner_text() or "").strip()
+        # Otherwise, grab the closest preceding label in the same field wrapper
+        lab = inp.locator("xpath=preceding::label[1]")
+        if lab.count() > 0 and lab.first.is_visible():
+            return (lab.first.inner_text() or "").strip()
+    except Error:
+        pass
+    return ""

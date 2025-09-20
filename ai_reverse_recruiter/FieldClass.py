@@ -9,7 +9,7 @@ import difflib
 import asyncio
 import time
 from angular_helper import reveal_all_select_options
-from functions_util import string_similarity,_norm, select_from_mat_select, get_closest_match, all_inner_texts_fast
+from functions_util import _fuzzy_score,print_html_element,string_similarity,_norm, select_from_mat_select, get_closest_match, all_inner_texts_fast
 from playwright.async_api import TimeoutError as PwTimeoutError
 class InputType(Enum):
     NOT_FOUND = "NOT_FOUND"
@@ -22,6 +22,7 @@ class InputType(Enum):
     CUSTOM_COMBOBOX = "CUSTOM_COMBOBOX" # Framework-specific combobox (MUI, PrimeNG, etc.)
     DATE = "DATE"
     NUMBER = "NUMBER"
+    CUSTOM_RADIO = "CUSTOM_RADIO"
 class Field:
     """Abstract base class for any form field.
 
@@ -51,6 +52,37 @@ class Field:
         except Exception:
             pass
 
+    def _has_any_value(self) -> bool:
+        """Best-effort check: consider the field 'filled' if any value/text exists.
+
+        We treat any non-empty string value as filled, regardless of whether it
+        matches the desired value.
+        """
+        if not self.locator:
+            return False
+        # Try input/select/textarea value via Playwright helper
+        try:
+            current = self.locator.input_value(timeout=500)
+            if (current or "").strip() != "":
+                return True
+        except Exception:
+            pass
+        # Fallback to raw value attribute
+        try:
+            raw = self.locator.get_attribute("value") or ""
+            if raw.strip() != "":
+                return True
+        except Exception:
+            pass
+        # As a last resort, visible inner text (for custom widgets)
+        try:
+            txt = (self.locator.inner_text(timeout=500) or "").strip()
+            if txt != "":
+                return True
+        except Exception:
+            pass
+        return False
+
     # Public API
     def fill(self, value) -> None:  # pragma: no cover -- abstract-ish
         raise NotImplementedError(f"fill() not implemented for {self.__class__.__name__}")
@@ -77,6 +109,9 @@ class TextField(Field):
         self._ensure_visible()
         if not self.locator:
             return
+        # Skip if already filled with any value
+        if self._has_any_value():
+            return
         self.locator.fill("")
         self.locator.type(str(value))
 
@@ -87,6 +122,9 @@ class TextAreaField(Field):
     def fill(self, value) -> None:
         self._ensure_visible()
         if not self.locator:
+            return
+        # Skip if already filled with any value
+        if self._has_any_value():
             return
         self.locator.fill("")
         self.locator.type(str(value))
@@ -99,6 +137,9 @@ class NumberField(Field):
         self._ensure_visible()
         if not self.locator:
             return
+        # Skip if already filled with any value
+        if self._has_any_value():
+            return
         self.locator.fill(str(value))
 
 
@@ -108,6 +149,9 @@ class DateField(Field):
     def fill(self, value) -> None:
         self._ensure_visible()
         if not self.locator:
+            return
+        # Skip if already filled with any value
+        if self._has_any_value():
             return
         # Most date inputs accept yyyy-mm-dd; adapt if your app needs a formatter
         self.locator.fill(str(value))
@@ -120,16 +164,150 @@ class CheckboxField(Field):
         self._ensure_visible()
         if not self.locator:
             return
-        desired = bool(value)
+        # Consider checkbox 'filled' if it's already checked; do not change it
         try:
             checked = self.locator.is_checked()
         except Exception:
             checked = False
-        if desired and not checked:
-            self.locator.check()
-        elif not desired and checked:
-            self.locator.uncheck()
+        if checked:
+            return
+        # If not checked, only check it when a truthy value is requested
+        desired = bool(value)
+        if desired:
+            try:
+                self.locator.check()
+            except Exception:
+                pass
 
+
+class CustomRadioField(Field):
+    input_type = InputType.CUSTOM_RADIO
+
+    def _normalize_yes_no(self, value: object) -> str:
+        s = ("" if value is None else str(value)).strip().lower()
+        if s in {"y", "yes", "true", "1", "on"}:
+            return "yes"
+        if s in {"n", "no", "false", "0", "off"}:
+            return "no"
+        # fall back to raw text (still used as case-insensitive)
+        return s or "yes"
+        
+    def fill(self, value) -> None:
+        print(f"filling a custom radio field with value {value} ...")
+        print("locator : ")
+        print_html_element(self.locator)
+        self._ensure_visible()
+        if not self.locator or self.ctx is None:
+            return
+
+        wanted = self._normalize_yes_no(value)  # "yes" or "no"
+        scope: Locator = self.locator
+
+        # Build a case-insensitive exact-match regex for the visible/accessible text
+        name_rx = re.compile(rf"^\s*{re.escape(wanted)}\s*$", re.I)
+
+        # --- NEW: detect if the desired option is already selected; don't skip otherwise
+        try:
+            # Things that might encode "selected" for radios/toggles
+            selected = scope.locator(
+                "input[type='radio']:checked, "
+                "[role='radio'][aria-checked='true'], "
+                "[aria-pressed='true'], "
+                "[data-state='on'], "
+                ".active, .selected"
+            )
+            if selected.count() > 0:
+                try:
+                    # Compare the selected option's visible text to 'wanted'
+                    sel_text = (selected.first.inner_text(timeout=500) or "").strip()
+                except Exception:
+                    sel_text = ""
+                if re.search(name_rx, sel_text or ""):
+                    return  # already set to the desired value
+                # else: continue; we will switch selection
+        except Exception:
+            pass
+
+        # 0) --- NEW: Button-based "radio" groups (toggle buttons)
+        # Prefer ARIA name via role=button, then plain <button> text
+        try:
+            btn = scope.get_by_role("button", name=name_rx)
+            if btn.count() > 0:
+                btn.first.click()
+                return
+        except Exception:
+            pass
+        btn2 = scope.locator("[role='button']", has_text=name_rx)
+        if btn2.count() > 0:
+            try:
+                btn2.first.click()
+                return
+            except Exception:
+                pass
+        btn3 = scope.locator("button", has_text=name_rx)
+        if btn3.count() > 0:
+            try:
+                btn3.first.click()
+                return
+            except Exception:
+                pass
+
+        # 1) ARIA radios by accessible name
+        target = scope.get_by_role("radio", name=name_rx)
+        if target.count() == 0:
+            target = scope.locator("[role='radio']", has_text=name_rx)
+        if target.count() > 0 and self._try_check(target.first):
+            return
+
+        # 2) Native input radios by value attribute (try common casings)
+        for v in {wanted, wanted.capitalize(), wanted.upper(), wanted.lower(), wanted.title()}:
+            cand = scope.locator(f"input[type='radio'][value='{v}']")
+            if cand.count() > 0 and self._try_check(cand.first):
+                return
+
+        # 3) Angular Material: <mat-radio-button> text → inner input
+        mat_btn = scope.locator("mat-radio-button", has_text=name_rx).first
+        if mat_btn.count() > 0:
+            inner = mat_btn.locator("input[type='radio']").first
+            if inner.count() > 0 and self._try_check(inner):
+                return
+            if self._try_check(mat_btn):
+                return
+
+        # 4) Labels associated to inputs
+        label = scope.locator("label", has_text=name_rx).first
+        if label.count() > 0:
+            try:
+                label.click()
+                return
+            except Exception:
+                pass
+            try:
+                for_id = label.get_attribute("for")
+                if for_id:
+                    assoc = scope.locator(f"#{for_id}")
+                    if assoc.count() > 0 and self._try_check(assoc.first):
+                        return
+            except Exception:
+                pass
+
+        # 5) Last resort: any descendant input[type=radio] whose nearby text matches
+        radios = scope.locator("input[type='radio']")
+        count = radios.count()
+        for i in range(count):
+            r = radios.nth(i)
+            candidate = r.locator("xpath=ancestor::*[self::mat-radio-button or @role='radio' or @role='radiogroup'] | ..")
+            if candidate.count() == 0:
+                candidate = r.locator("..")
+            try:
+                txt = (candidate.first.inner_text(timeout=500) or "").strip()
+            except Exception:
+                txt = ""
+            if re.search(name_rx, txt or "", flags=0):
+                if self._try_check(r):
+                    return
+
+        raise ValueError(f"Radio option not found for value '{value}' within this field.")
 
 class RadioField(Field):
     input_type = InputType.RADIO
@@ -162,9 +340,21 @@ class RadioField(Field):
             return False
 
     def fill(self, value) -> None:
+        print(f"filling a radio field with value {value} ...")
+        print("locator : ")
+        print_html_element(self.locator)
         self._ensure_visible()
         if not self.locator or self.ctx is None:
             return
+
+        # If any radio in this group is already selected, consider it filled and skip
+        try:
+            scope: Locator = self.locator
+            existing = scope.locator("input[type='radio']:checked, [role='radio'][aria-checked='true']")
+            if existing.count() > 0:
+                return
+        except Exception:
+            pass
 
         wanted = self._normalize_yes_no(value)  # "yes" or "no"
         # Scope searches to this field/group when possible
@@ -246,6 +436,14 @@ class SelectField(Field):
         self._ensure_visible()
         if not self.locator:
             return
+        # Skip if already selected to any non-empty value
+        try:
+            current = self.locator.input_value(timeout=500)
+            if (current or "").strip() != "":
+                return
+        except Exception:
+            # If unable to read, continue with normal flow
+            pass
         # Try by value first, then by label
         try:
             self.locator.select_option(str(value))
@@ -388,8 +586,26 @@ class AriaComboBoxField(Field):
         self._ensure_visible()
         if not self.locator:
             return
+        print("locator : ")
+        print_html_element(self.locator)
+        # If there's an inner input and it's already populated, consider filled
+        inner = self.locator.locator("input, [contenteditable='true']").first
+        if inner.count() > 0:
+            try:
+                inner_val = ""
+                try:
+                    inner_val = inner.input_value(timeout=500)
+                except Exception:
+                    # contenteditable or non-input
+                    inner_val = inner.inner_text(timeout=500) or ""
+                if (inner_val or "").strip() != "":
+                    return
+            except Exception:
+                pass
         # Open the popup
+        print("opening the popup...")
         self.locator.click()
+        time.sleep(5)
         # If there's an inner input, type to filter
         inner = self.locator.locator("input, [contenteditable='true']").first
         if inner.count() > 0:
@@ -398,7 +614,8 @@ class AriaComboBoxField(Field):
             inner.type(str(value))
         else:
             print("no inner input found")
-
+            self.fill_try_again(value)
+            return
         # Detect Angular Material select/autocomplete patterns
         is_angular_material = False
         try:
@@ -434,6 +651,110 @@ class AriaComboBoxField(Field):
         #print("clicking the option...")
         option.click()
 
+    def _page_like(self) -> Union[Page, Frame]:
+        # where popups/portals usually get attached
+        return self.ctx or self.locator.page
+
+    def fill_try_again(self, value) -> None:
+        self._ensure_visible()
+        if not self.locator:
+            return
+
+        # Determine the inner editable element:
+        # if self.locator IS the input/combobox, use it; otherwise, find a child input/combobox/contenteditable
+        inner = self.locator
+        try:
+            tag = (inner.evaluate("e => e.tagName") or "").lower()
+        except Exception:
+            tag = ""
+        try:
+            role = (inner.get_attribute("role") or "").lower()
+        except Exception:
+            role = ""
+
+        if not (tag == "input" or role == "combobox"):
+            inner = self.locator.locator("input, [role='combobox'], [contenteditable='true']").first
+
+        # Focus/open the popup
+        try:
+            inner.click(timeout=3000)
+        except Exception:
+            # try clicking the toggle next to it
+            try:
+                self.locator.locator("button,[aria-haspopup='listbox']").first.click(timeout=3000)
+            except Exception:
+                pass
+
+        # Ensure expanded if it supports it
+        try:
+            if inner.get_attribute("aria-expanded") != "true":
+                # Click toggle if present
+                toggle = self.locator.locator("button,[aria-haspopup='listbox']").first
+                if toggle.count() > 0:
+                    toggle.click()
+        except Exception:
+            pass
+
+        # Type the target query
+        try:
+            inner.fill("")  # clear if it's an input
+        except Exception:
+            pass
+        try:
+            inner.type(str(value), delay=20)  # slight delay helps some UIs
+        except Exception:
+            pass
+
+        # Wait for the listbox/portal to render
+        page_like = self._page_like()
+        listbox = page_like.locator("[role='listbox']").first
+        try:
+            listbox.wait_for(state="visible", timeout=5000)
+        except Exception:
+            # Sometimes options are direct siblings, try a local fallback
+            listbox = self.locator.locator("[role='listbox']").first
+
+        # Get all options
+        options = listbox.locator("[role='option']")
+        try:
+            options.first.wait_for(state="visible", timeout=5000)
+        except Exception:
+            # No listbox? try global options (some UIs don’t wrap in listbox)
+            options = page_like.locator("[role='option']")
+
+        count = options.count()
+        if count == 0:
+            # If no options, fall back to Enter (accept free text if allowed)
+            try:
+                inner.press("Enter")
+            except Exception:
+                pass
+            return
+
+        # Pick nearest
+        target = str(value)
+        best_idx, best_score = 0, float("-inf")
+        texts = options.all_text_contents()
+        for i, t in enumerate(texts):
+            s = _fuzzy_score(t or "", target)
+            if s > best_score:
+                best_score, best_idx = s, i
+
+        # Click the best option
+        options.nth(best_idx).click()
+
+        # Optionally verify the inner value is now set
+        try:
+            current = ""
+            try:
+                current = inner.input_value(timeout=500)
+            except Exception:
+                current = inner.inner_text(timeout=500) or ""
+            if not current.strip():
+                # Press Enter as a final fallback
+                inner.press("Enter")
+        except Exception:
+            pass
 
 class CustomComboBoxField(Field):
     """Framework-styled comboboxes (MUI Autocomplete, PrimeNG p-dropdown, etc.).
@@ -452,6 +773,19 @@ class CustomComboBoxField(Field):
         self._ensure_visible()
         if not self.locator:
             return
+        # Check inner editable: if has content, consider filled
+        inner = self.locator.locator("input:not([type='hidden']), [contenteditable='true']").first
+        if inner.count() > 0:
+            try:
+                inner_val = ""
+                try:
+                    inner_val = inner.input_value(timeout=500)
+                except Exception:
+                    inner_val = inner.inner_text(timeout=500) or ""
+                if (inner_val or "").strip() != "":
+                    return
+            except Exception:
+                pass
         # 1) Open the widget
         self.locator.click()
 

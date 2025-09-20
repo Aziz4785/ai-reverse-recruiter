@@ -1,10 +1,12 @@
 from enum import Enum
 from typing import List, Optional, Dict, Type
-from playwright.sync_api import Page, Frame, Locator
+from playwright.sync_api import Page, Frame, Locator, Error
 from playwright.async_api import async_playwright
 import re
-from FieldClass import Field, InputType, NotFoundField, TextField, AriaComboBoxField, CustomComboBoxField, TextAreaField, CheckboxField, RadioField, SelectField, DateField, NumberField
-from functions_util import print_html_element
+from FieldClass import Field, InputType, NotFoundField,CustomRadioField, TextField, AriaComboBoxField, CustomComboBoxField, TextAreaField, CheckboxField, RadioField, SelectField, DateField, NumberField
+from functions_util import print_html_element, _first_interactable, _label_text_for_input, _first_visible
+from location_finder import _find_location_field
+from sponsorship_helper import find_sponsorship_field
 # ---- Registry & Factory -----------------------------------------------------
 FIELD_REGISTRY: Dict[InputType, Type[Field]] = {
     InputType.NOT_FOUND: NotFoundField, # Not used by factory, but useful for adapters
@@ -17,6 +19,7 @@ FIELD_REGISTRY: Dict[InputType, Type[Field]] = {
     InputType.SELECT: SelectField,
     InputType.COMBOBOX: AriaComboBoxField,
     InputType.CUSTOM_COMBOBOX: CustomComboBoxField,
+    InputType.CUSTOM_RADIO: CustomRadioField,
 }
 
 # String-name compatibility map so we can work with external InputType enums
@@ -30,6 +33,7 @@ FIELD_REGISTRY_BY_NAME: Dict[str, Type[Field]] = {
     "SELECT": SelectField,
     "COMBOBOX": AriaComboBoxField, # unified handler (native select + ARIA)
     "CUSTOM_COMBOBOX": CustomComboBoxField,
+    "CUSTOM_RADIO": CustomRadioField,
     "DATE": DateField,
     "NUMBER": NumberField,
 }
@@ -43,19 +47,6 @@ def _all_contexts(page: Page) -> List[Page | Frame]:
             ctxs.append(fr)
     return ctxs
 
-def _first_visible(loc: Locator) -> Optional[Locator]:
-    try:
-        n = loc.count()
-    except Exception:
-        return None
-    for i in range(n):
-        cand = loc.nth(i)
-        try:
-            if cand.is_visible():
-                return cand
-        except Exception:
-            continue
-    return None
 
 # Compact multilingual patterns for the question
 QUESTION_RE = re.compile(
@@ -164,6 +155,273 @@ def find_prior_employment_question(page: Page):
     print("find_prior_employment_question : no group found")
     return None
 
+# def _first_interactable(loc: Locator) -> Optional[Locator]:
+#     """Return the first visible, enabled element inside `loc`, if any."""
+#     try:
+#         count = loc.count()
+#     except Error:
+#         return None
+#     for i in range(min(count, 20)):  # scan a few; adjust if you like
+#         cand = loc.nth(i)
+#         try:
+#             if cand.is_visible() and not cand.is_disabled():
+#                 return cand
+#         except Error:
+#             continue
+#     return None
+
+
+# def _find_location_field(ctx: Page | Frame, synonyms: List[str]) -> Optional[Locator]:
+#     """
+#     Find a 'location' style text/combobox input (city/address/place).
+#     Returns the first visible, enabled Locator or None.
+#     """
+#     base_terms = [
+#         "location", "city", "town", "locality", "place", "address",
+#         "where do you live", "current city", "hometown", "country", "region",
+#         "state", "province", "postal code", "postcode", "zip code"
+#     ]
+#     terms = sorted(set([*(synonyms or []), *base_terms]), key=len, reverse=True)
+
+#     # Regex signals for attributes/placeholders
+#     loc_rx = r"(?:location|city|town|localit[y|é]|place|address|addr|country|region|state|province|zip|postal)"
+#     candidates: List[Locator] = []
+
+#     # 1) Exact label association (works if <label for> ↔ <input id> OR label wraps input)
+#     for t in terms:
+#         candidates.append(ctx.get_by_label(t, exact=True))
+
+#     # 2) Role-based name (combobox or textbox named 'Location', etc.)
+#     for t in terms:
+#         candidates.append(ctx.get_by_role("combobox", name=t, exact=True))
+#         candidates.append(ctx.get_by_role("textbox", name=t, exact=True))
+
+#     # 3) Label-near-input: container with a label → descend to likely inputs
+#     label_union = ", ".join([f"label:has-text('{t}')" for t in terms])
+#     if label_union:
+#         # common container → input/combobox
+#         candidates.append(
+#             ctx.locator(f":is(form, div, section, li, td, th):has({label_union})")
+#                .locator("input, [role='combobox'], [contenteditable='true']")
+#         )
+#         # label followed by next input
+#         candidates.append(ctx.locator(f"{label_union} >> xpath=following::input[1]"))
+#         # sibling within the same container that looks like a combobox
+#         candidates.append(
+#             ctx.locator(f":has({label_union}) [role='combobox'], :has({label_union}) input")
+#         )
+
+#     # 4) Inputs hinting address/location semantics
+#     candidates.append(ctx.locator(
+#         "input[autocomplete*='address' i], "
+#         "input[autocomplete*='street' i], "
+#         "input[autocomplete*='country' i], "
+#         "input[autocomplete*='postal' i], "
+#         "input[autocomplete*='zip' i]"
+#     ))
+#     candidates.append(ctx.locator(
+#         "input[inputmode='search'], input[list], input[aria-autocomplete='list'], [role='combobox'] input"
+#     ))
+
+#     # 5) Name/ID/class contains location-ish words
+#     candidates.append(ctx.locator(
+#         f"input, [role='combobox'] >> css=[name*={loc_rx} i], [id*={loc_rx} i], [class*={loc_rx} i], [data-testid*={loc_rx} i]"
+#     ))
+
+#     # 6) Placeholder hints
+#     candidates.append(ctx.locator(
+#         f"input[placeholder*={loc_rx} i], "
+#         "input[placeholder*='Start typing' i], "
+#         "input[placeholder*='Search' i]"
+#     ))
+
+#     # 7) Popular widgets (Google Places / Mapbox / Algolia, etc.)
+#     candidates.append(ctx.locator(
+#         "input.pac-target-input, input.mapboxgl-ctrl-geocoder--input, input[aria-controls*='algolia' i]"
+#     ))
+
+#     # Return first interactable candidate
+#     for loc in candidates:
+#         cand = _first_interactable(loc)
+#         if cand:
+#             return cand
+
+#     return None
+
+def _find_phone_field(ctx: Page | Frame, synonyms: List[str]) -> Optional[Locator]:
+    """
+    Find a phone number input on the page/frame using multiple strategies.
+    Returns a Locator to the first visible, enabled match, or None.
+    """
+    # Normalize/expand search terms
+    base_terms = [
+        "phone", "téléphone", "tel", "tél", "mobile", "cell", "cellphone",
+        "telefono", "telefone", "telefon", "whatsapp", "gsm"
+    ]
+    # keep user-provided synonyms too
+    terms = list({t.strip() for t in (synonyms or []) if t.strip()})
+    terms.extend(base_terms)
+    # Sorted longest-first to prefer exact/longer labels (avoids "Phone Ext" issues)
+    terms = sorted(set(terms), key=len, reverse=True)
+
+    # Build a case-insensitive regex for name/id/class/placeholder matching
+    phone_rx = r"(?:phone|t[ée]l(?:[ée]phone)?|mobile|cell(?:phone)?|gsm|whatsapp)"
+    # Escape synonyms for exact label/name matches
+    term_literals = [re.escape(t) for t in terms]
+
+    candidates: List[Locator] = []
+
+    # 1) Label-based (best signal). Works when <label for=...> or wrapping.
+    #    Playwright hooks up labels to controls via get_by_label.
+    for t in terms:
+        # exact=True is strict; if you want fuzzy, set exact=False
+        candidates.append(ctx.get_by_label(t, exact=True))
+
+    # 2) Inputs that are explicitly telephone fields
+    candidates.append(ctx.locator("input[type='tel'], input[inputmode='tel'], input[autocomplete*='tel' i]"))
+
+    # 3) Inputs hinted by name/id/class attributes (contains phone/tel/mobile etc.)
+    candidates.append(ctx.locator(
+        f"input, textarea >> css=[name*={phone_rx} i], [id*={phone_rx} i], [class*={phone_rx} i]"
+    ))
+
+    # 4) Placeholder hints (often show example numbers)
+    candidates.append(ctx.locator(
+        f"input[placeholder*={phone_rx} i], textarea[placeholder*={phone_rx} i], "
+        "input[placeholder*='+' i], input[placeholder*='('], input[placeholder*=')'], input[placeholder*='-']"
+    ))
+
+    # 5) ARIA label (direct or via aria-labelledby)
+    for t in terms:
+        esc = t.replace("'", "\\'")
+        candidates.append(ctx.locator(f"input[aria-label='{esc}' i], textarea[aria-label='{esc}' i]"))
+        # via aria-labelledby text fallback (looser)
+        candidates.append(ctx.get_by_role("textbox", name=t, exact=True))
+
+    # 6) Label text sitting next to/above an input (common in custom UIs)
+    #    Use :has() to hop from container or label to the input it controls.
+    #    Matches cases like: <div><label>Phone</label><input ...></div>
+    label_union = ", ".join([f"label:has-text('{t}')" for t in terms])
+    if label_union:
+        # container that has such a label, then descend to input-like controls
+        candidates.append(
+            ctx.locator(f":is(div, section, form, li, td, th):has({label_union})").locator(
+                "input, textarea, [contenteditable='true']"
+            )
+        )
+        # label followed by a sibling/descendant input
+        candidates.append(
+            ctx.locator(f"{label_union} >> xpath=following::input[1]")
+        )
+
+    # 7) Angular/Material patterns (as in your original)
+    for t in terms:
+        esc = t.replace("'", "\\'")
+        candidates.append(ctx.locator(f"mat-form-field:has(mat-label:has-text('{esc}'))").locator("input, textarea, [matinput]"))
+
+    # 8) As a final heuristic: role=textbox with a name that *contains* a phone-ish word
+    candidates.append(ctx.get_by_role("textbox", name=re.compile(phone_rx, re.I)))
+
+    # Walk candidates in priority order and return the first interactable element
+    for loc in candidates:
+        cand = _first_interactable(loc)
+        if cand:
+            return cand
+
+    return None
+
+
+def _find_linkedin_url_field(ctx: Page | Frame, synonyms: List[str]) -> Optional[Locator]:
+    """
+    Find a LinkedIn profile URL input on the page/frame using multiple strategies.
+    Returns a Locator to the first visible, enabled match, or None.
+    """
+    # Normalize/expand search terms
+    base_terms = [
+        "linkedin",
+        "linkedin profile",
+        "linkedin url",
+        "linkedin profile url",
+        "profil linkedin",            # fr
+        "url linkedin",               # fr
+        "perfil de linkedin",         # es
+        "perfil do linkedin",         # pt
+        "linkedin-profil",            # de
+        "profilo linkedin",           # it
+    ]
+    terms = list({t.strip() for t in (synonyms or []) if t.strip()})
+    terms.extend(base_terms)
+    terms = sorted(set(terms), key=len, reverse=True)
+
+    # Regex for attribute/placeholder/name matches
+    linkedin_rx = r"(?:linked\s*in|linkedin)"
+
+    candidates: List[Locator] = []
+
+    # 1) Label-based (strongest)
+    for t in terms:
+        candidates.append(ctx.get_by_label(t, exact=True))
+
+    # 2) Role-based by accessible name
+    for t in terms:
+        candidates.append(ctx.get_by_role("textbox", name=t, exact=True))
+
+    # 3) ARIA label direct
+    for t in terms:
+        esc = t.replace("'", "\\'")
+        candidates.append(ctx.locator(f"input[aria-label='{esc}' i], textarea[aria-label='{esc}' i]"))
+
+    # 4) Label-adjacent input (tight scope around the label only)
+    #    Avoid large containers like <form> that may contain unrelated inputs
+    for t in terms:
+        esc = t.replace("'", "\\'")
+        label = ctx.locator(f"label:has-text('{esc}')")
+        # immediate following input after the label
+        candidates.append(label.locator("xpath=following::input[1]"))
+        # nearest small wrapper (not form), then first input/textarea inside
+        candidates.append(
+            label.locator(
+                "xpath=ancestor::*[self::div or self::section or self::li or self::td or self::th][1]"
+            ).locator("input[type='url'], input, textarea")
+        )
+
+    # 5) Attribute/placeholder contains linkedin
+    candidates.append(
+        ctx.locator(
+            f"input[type='url'][placeholder*={linkedin_rx} i], "
+            f"textarea[placeholder*={linkedin_rx} i], "
+            f"input[type='url'][name*={linkedin_rx} i], "
+            f"input[type='url'][id*={linkedin_rx} i], "
+            f"input[type='url'][class*={linkedin_rx} i]"
+        )
+    )
+    candidates.append(
+        ctx.locator(
+            f"input, textarea >> css="
+            f"[name*={linkedin_rx} i], [id*={linkedin_rx} i], [class*={linkedin_rx} i], [data-testid*={linkedin_rx} i], "
+            f"[placeholder*={linkedin_rx} i]"
+        )
+    )
+
+    # 6) Angular/Material label pattern
+    for t in terms:
+        esc = t.replace("'", "\\'")
+        candidates.append(
+            ctx.locator(f"mat-form-field:has(mat-label:has-text('{esc}'))").locator("input[type='url'], input, textarea, [matinput]")
+        )
+
+    # 7) Heuristic: role=textbox with name containing 'linkedin'
+    candidates.append(ctx.get_by_role("textbox", name=re.compile(linkedin_rx, re.I)))
+
+    # Walk candidates and return the first interactable element
+    for loc in candidates:
+        cand = _first_interactable(loc)
+        if cand:
+            print_html_element(cand)
+            return cand
+
+    return None
+
 def _find_first_matching_field(ctx: Page | Frame, synonyms: List[str]) -> Optional[Locator]:
     candidates: List[Locator] = []
 
@@ -200,7 +458,7 @@ def _find_first_matching_field(ctx: Page | Frame, synonyms: List[str]) -> Option
         if cand:
             #print("  the valid locator is at index ", j , " 0-indexed")
             return cand
-    print("no valid candidates found")
+    #print("no valid candidates found")
     return None
 
 def _tag_name(el: Locator) -> str:
@@ -316,11 +574,33 @@ def _is_radio_like(el: Locator) -> bool:
 
     return False
 
+def _is_toggle_button(el: Locator) -> bool:
+    val = _attr(el, "aria-pressed")
+    return val in ("true", "false")
+
+def _in_two_option_button_group(ctx: Page | Frame, el: Locator) -> bool:
+    # look at siblings under the same parent that are buttons or role=button
+    parent = el.locator("xpath=..")
+    sibs = parent.locator("button, [role='button']")
+    count = sibs.count()
+    if count == 2:
+        texts = { sibs.nth(i).inner_text().strip().lower() for i in range(2) }
+        # common pattern: Yes/No (or toggle buttons)
+        if {"yes", "no"}.issubset(texts):
+            return True
+        # or both are toggle buttons
+        if all(_is_toggle_button(sibs.nth(i)) for i in range(2)):
+            return True
+    return False
+
 def _classify_field(ctx: Page | Frame, el: Locator) -> InputType:
     #print("_classify_field()")
     tag = _tag_name(el)
     attr_id = _attr(el, "id")
+    attr_role = _attr(el, "role")
     attr_name = _attr(el, "name")
+    print("classifing this element : ")
+    print_html_element(el)
     #print("tag :", tag)
     ##print("Locator repr:", el)  # shows frame + selector
     #print("tag:",tag)
@@ -332,6 +612,17 @@ def _classify_field(ctx: Page | Frame, el: Locator) -> InputType:
     # #print("placeholder:", _attr(el, "placeholder"))
     # Native select
     print("_classify_field..")
+
+    # --- handle native & ARIA buttons early ---
+    if tag == "button" or attr_role == "button":
+        # Heuristic: two-option toggle group like Yes/No -> treat as RADIO
+        if _in_two_option_button_group(ctx, el) or _is_toggle_button(el):
+            print("it is a custom radio because we have a button tag with a two-option toggle group")
+            return InputType.CUSTOM_RADIO
+        # Otherwise it's just a clickable button
+        return getattr(InputType, "BUTTON", getattr(InputType, "CLICKABLE", InputType.TEXTBOX))  # last resort
+
+
     #print_html_element(el)
     if tag == "select":
         #print("it is a combobox because we have a select tag")
@@ -376,6 +667,18 @@ def get_field_of(page: Page, key: str, synonyms: List[str]) -> Field:
         if key == "did_you_work_previously":
             print("did_you_work_previously : finding the field")
             loc = find_prior_employment_question(ctx)
+        elif key == "phone_number":
+            print("phone_number : finding the field")
+            loc = _find_phone_field(ctx, synonyms)
+        elif key == "location":
+            print("location : finding the field")
+            loc = _find_location_field(ctx, synonyms)
+        elif key == "linkedin_url":
+            print("linkedin_url : finding the field")
+            loc = _find_linkedin_url_field(ctx, synonyms)
+        elif key == "sponsorship_yes_no":
+            print("sponsorship_yes_no : finding the field")
+            loc = find_sponsorship_field(ctx)
         else:
             loc = _find_first_matching_field(ctx, synonyms)
         #print_html_element(loc)
